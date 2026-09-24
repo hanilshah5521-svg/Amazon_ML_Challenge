@@ -1,0 +1,12 @@
+# competition data and archives (never commit: >100 MB files, organiser data)
+student_resource/
+__MACOSX/
+*.zip
+# large intermediate / generated files
+work/
+output*/
+# OS / editor junk
+.DS_Store
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
