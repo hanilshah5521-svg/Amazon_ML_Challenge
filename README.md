@@ -67,7 +67,7 @@ Intermediate files go to `work/` and outputs to `output/`. Run from
 `code/business_entity_resolution/src/`:
 
 ```bash
-pip install polars numpy scikit-learn sparse_dot_topn rapidfuzz unidecode lightgbm
+pip install -r ../requirements.txt   # exact versions used for the 0.915 run (Python 3.10)
 python normalize.py build-dict      # learn the Indic -> English word dictionary
 python normalize.py train           # normalize the train sources
 python normalize.py test            # normalize the test sources
@@ -86,7 +86,10 @@ Hardware used: 16 GB RAM, 18 CPU threads, no GPU. Test candidate search takes ab
 |---|---|---|
 | **LightGBM + decoy checks** | **0.913 / 0.942** | **0.915** |
 
-This repository reproduces the 0.915 submission exactly: the committed `normalize.py` is the
+This repository reproduces the 0.915 submission: `output/matching_results.tsv` had SHA-256 prefix
+`8b1b22a6b36b15ea`. With the pinned `requirements.txt`, and the same thread count (tiny floating-point
+or tie-order differences can flip a handful of borderline pairs), a rerun should match or differ
+negligibly. Also: the committed `normalize.py` is the
 version that produced the normalized data used for it (verified on 40k re-normalized records).
 
 Candidate recall at top-10 (held-out): India 90.5%, US 95.0%.
