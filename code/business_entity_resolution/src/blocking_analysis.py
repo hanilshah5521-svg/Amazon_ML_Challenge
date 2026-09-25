@@ -13,7 +13,7 @@ import polars as pl
 from rapidfuzz import fuzz
 from sklearn.metrics import roc_auc_score
 
-from baseline import decide, f05_macro
+from evaluation import decide, f05_macro
 from common import WORK, read_pairs
 
 KS = (1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100)

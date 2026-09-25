@@ -14,7 +14,7 @@ from rapidfuzz import fuzz
 from rapidfuzz.process import cpdist
 from sklearn.model_selection import GroupKFold
 
-from baseline import decide, f05_macro
+from evaluation import decide, f05_macro
 from common import WORK, read_pairs
 from pair_features import legal_relation, number_relation
 
@@ -85,7 +85,7 @@ def training_frame():
 
 def submit():
     import subprocess, sys
-    from baseline import OUT, _write
+    from evaluation import OUT, write_tsv
     from common import DATA, ROOT, read_source
     tr = training_frame()
     model = lgb.train(PARAMS, lgb.Dataset(tr.select(FEATURES).to_numpy(), tr["y"].to_numpy()), 400)
@@ -106,8 +106,8 @@ def submit():
     feat, matches = pl.concat(kept), pl.concat(parts)
     ids = s1["entity_id"]
     OUT.mkdir(exist_ok=True)
-    _write(feat.select("s1", "cand"), "candidate_entity_ids", OUT / "candidate_pairs.tsv", ids)
-    _write(matches, "matched_entity_ids", OUT / "matching_results.tsv", ids)
+    write_tsv(feat.select("s1", "cand"), "candidate_entity_ids", OUT / "candidate_pairs.tsv", ids)
+    write_tsv(matches, "matched_entity_ids", OUT / "matching_results.tsv", ids)
     print(f"candidates {feat.height:,} ({feat.height / len(ids):.2f}/S1), matches {matches.height:,}, "
           f"S1 with no match {1 - matches['s1'].n_unique() / len(ids):.1%}", flush=True)
     subprocess.run([sys.executable, str(ROOT / "student_resource" / "utils" / "validate_submission.py"),

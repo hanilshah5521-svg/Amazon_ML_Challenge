@@ -55,7 +55,7 @@ raw TSVs ─▶ normalize ─▶ candidate search (blocking) ─▶ pair feature
 | `…/src/blocking.py` | Candidate search: `eval` (recall on held-out train) and `test` modes |
 | `…/src/pair_features.py` | Legal-form and house-number checks |
 | `…/src/lgbm_matcher.py` | LightGBM training, cross-validated evaluation, `submit` mode |
-| `…/src/baseline.py` | Earlier hand-weighted matcher, the F0.5 scorer and the TSV writer |
+| `…/src/evaluation.py` | Macro F0.5 scorer (README formula), match decision rule, submission TSV writer |
 | `…/src/eda.py`, `edge_miner.py`, `france_miner.py`, `france_patterns.py`, `explore_neighbors.py`, `blocking_analysis.py` | Analysis only: where the rules came from. Not needed to reproduce outputs. |
 | `research_notes/` | Literature and competition research (blocking, matchers, normalization, benchmarks, industry systems) |
 | `phase-1.ipynb`, `Shreya nb - 2.ipynb` | Team exploration notebooks |
@@ -84,8 +84,10 @@ Hardware used: 16 GB RAM, 18 CPU threads, no GPU. Test candidate search takes ab
 
 | Version | Held-out F0.5 (India / US) | Leaderboard |
 |---|---|---|
-| Hand-weighted score (name + address) | 0.757 / 0.800 | 0.725 |
 | **LightGBM + decoy checks** | **0.913 / 0.942** | **0.915** |
+
+This repository reproduces the 0.915 submission exactly: the committed `normalize.py` is the
+version that produced the normalized data used for it (verified on 40k re-normalized records).
 
 Candidate recall at top-10 (held-out): India 90.5%, US 95.0%.
 
@@ -99,8 +101,9 @@ Candidate recall at top-10 (held-out): India 90.5%, US 95.0%.
 
 ## Next steps
 
-- Re-run normalization. `normalize.py` already contains the newer France and global rules, but
-  the current outputs were made before them.
+- Newer France and global normalization rules (N°/apartment drops, French generic words, street-type
+  typo fix, `12bis` split, `5ARL`/`8ordeaux` look-alikes) are kept out of this version and will be
+  added with the next submission.
 - Run full-recall candidate search. The current run trades 2–4% recall for speed
   (`K_NAME/K_ADDR=20`, `MAX_DF=0.02`).
 - Train on ~10× more Source 1 records.
