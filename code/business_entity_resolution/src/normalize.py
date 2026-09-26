@@ -13,10 +13,12 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
+from functools import lru_cache
 from multiprocessing import Pool
 
 import polars as pl
-from unidecode import unidecode
+from rapidfuzz.distance import OSA
+from anyascii import anyascii as unidecode   # ISC licence (replaces GPL unidecode)
 
 from common import WORK, read_pairs, read_source
 
@@ -42,7 +44,8 @@ NAME_STOP = {"the", "mr", "mrs", "ms", "m", "and", "of", "dba", "fka", "aka", "e
              "du", "des", "la", "le", "les", "www", "com", "net", "org", "in", "fr", "biz",
              "france", "sri", "shri", "shree", "sree", "smt", "messrs", "dr", "formerly",
              "known", "as", "id"}
-NAME_VARIANTS = {"laxmi": "lakshmi", "jay": "jai", "ganpati": "ganapati", "vinayaka": "vinayak"}
+NAME_VARIANTS = {"laxmi": "lakshmi", "jay": "jai", "ganpati": "ganapati", "vinayaka": "vinayak",
+                 "frs": "freres"}
 # Generic business words: swapped/added as noise ("center" is added in 72% of its match
 # occurrences, "care"->"center", "partners"->"services"). Dropped from `name_key` only.
 GENERIC = {"center", "centre", "services", "service", "group", "holdings", "companies",
@@ -52,7 +55,10 @@ GENERIC = {"center", "centre", "services", "service", "group", "holdings", "comp
            "technologies", "technology", "tech", "systems", "global", "brothers", "investments",
            "agency", "agencies", "network", "labs", "laboratories", "studios", "studio",
            "innovations", "brands", "advisors", "academy", "council", "league", "hospital",
-           "church", "college", "dynamics", "llc", "inc", "pvt", "ltd", "corp", "co"}
+           "church", "college", "dynamics", "llc", "inc", "pvt", "ltd", "corp", "co",
+           # France: added by the noise in S2/S3 (e.g. "participations" 2.4% of S2/S3 vs ~0% S1)
+           "participations", "holding", "distribution", "associes", "developpement", "groupe",
+           "fils", "freres"}
 # Alias markers: the text AFTER the marker is the entity's own name
 # ("Yumavantage f/k/a Beacon Energy", "Lumonyx doing business as SJD Amis EI").
 ALIAS_SPLIT = re.compile(r"\b(?:f\s*/\s*k\s*/\s*a|fka|a\s*/\s*k\s*/\s*a|aka|d\s*/\s*b\s*/\s*a|dba|"
@@ -61,6 +67,12 @@ ALIAS_SPLIT = re.compile(r"\b(?:f\s*/\s*k\s*/\s*a|fka|a\s*/\s*k\s*/\s*a|aka|d\s*
 MS_PREFIX = re.compile(r"\bm\s*/\s*s\b\.?", re.I)          # "M/s Floret" -> "Floret"
 # Look-alike digits inside words: "Pub1ications", "Internationa1", "1imited" (names only).
 LOOKALIKE = re.compile(r"(?<=[a-z])[10](?=[a-z]|\b)|\b[10](?=[a-z]{2,})")
+# 5->s, 8->b, 6->g only at the start of a word followed by 3+ letters ("5arl", "8ordeaux", "6irard").
+LOOKALIKE_START = re.compile(r"\b([586])(?=[a-z]{3,})")
+# Street-type words that the noise misspells (France: aveue/avnue/alee; US: stret/raod/drve).
+STREET_TYPES = ["avenue", "allee", "boulevard", "impasse", "chemin", "route", "passage", "quai",
+                "cours", "place", "street", "road", "drive", "lane", "court", "terrace"]
+GLUED_SUFFIX = re.compile(r"\b(\d+)(bis|ter|quater)\b")          # 12bis -> 12 bis
 
 # ------------------------------------------------------------- address vocab
 ADDR_COMMON = {
@@ -88,6 +100,9 @@ ADDR_COMMON = {
     "landing": "lndg", "lodge": "ldg", "manor": "mnr", "mill": "ml", "mills": "mls",
     "orchard": "orch", "pines": "pnes", "plains": "plns", "port": "prt", "ranch": "rnch",
     "river": "riv", "summit": "smt", "tunnel": "tunl", "walk": "wlk", "cross": "crs",
+    # AFNOR NF Z10-011 (France): full word -> official abbreviation
+    "faubourg": "fg", "fbg": "fg", "hameau": "ham", "promenade": "prom", "sentier": "sen",
+    "parvis": "parv", "che": "ch",
 }
 # Tokens the noise adds or drops far more often than chance (unit dropped 75%, pmb/box/cdp
 # added ~100%): removed from addresses. The numbers after them are kept.
@@ -156,8 +171,13 @@ STATE_COMPONENT = {
                "nouvelle aquitaine": "stnaq", "gironde": "stnaq",
                "pays de la loire": "stpdl", "loire atlantique": "stpdl"},
 }
-ADDR_COUNTRY = {"France": {"r": "rue", "all": "allee", "chem": "ch", "chemin": "ch",
-                           "n": "no", "pl": "pl", "fbg": "faubourg", "rte": "rte"}}
+# France: "all"/"allee" both end as "all" via ADDR_COMMON (the old "all"->"allee" here made
+# "Allée" and "All." disagree); "no" (from N°/No/#) is added in 11.7% of S2/S3 vs ~0% of S1.
+ADDR_FR_DROP = {"no", "appartement", "appt", "app", "etage", "batiment", "bat", "residence",
+                "res", "chez", "escalier", "esc"}
+ADDR_COUNTRY = {"France": {"r": "rue", "all": "all", "q": "qu", "passage": "psg", "pass": "psg",
+                           "chem": "ch", "chemin": "ch",
+                           "n": "no", "pl": "pl", "fbg": "fg", "rte": "rte"}}
 # "(India)" / "(France)" inside a name: kept in `name`, dropped from `name_core`.
 PAREN_COUNTRY = re.compile(r"\(\s*(india|france|usa|u\.?s\.?a?\.?|us)\s*\)", re.I)
 PAREN_MARK = "xqpc"
@@ -218,6 +238,7 @@ def _name_tokens(raw):
     text = PAREN_COUNTRY.sub(lambda m: f" {PAREN_MARK}{m.group(1)} ", MS_PREFIX.sub(" ", raw))
     text = _basic(transliterate(text, _indic_dict()))
     text = LOOKALIKE.sub(lambda m: "l" if m.group(0) == "1" else "o", text)
+    text = LOOKALIKE_START.sub(lambda m: {"5": "s", "8": "b", "6": "g"}[m.group(1)], text)
     # Roman numerals stay as-is in names: the data keeps them on both sides and has
     # look-alike noise ("XI" vs "Xl") that converting to digits would make worse.
     return [NAME_VARIANTS.get(t) or LEGAL.get(t, t) for t in text.split()]
@@ -245,6 +266,23 @@ def normalize_name(raw, country=""):
     return norm, core_s, " ".join(key) or core_s
 
 
+_KNOWN_ADDR = set(ADDR_COMMON) | set(ADDR_COMMON.values()) | set(STREET_TYPES)
+_TYPO_TARGETS = [s for s in STREET_TYPES if len(s) >= 5 and s != "place"]  # not lane/road/quai
+
+
+@lru_cache(maxsize=200_000)
+def _street_typo(tok):
+    """Misspelled street type -> canonical ("aveue"->"avenue", "stret"->"street"). One edit
+    (incl. transposition), same first letter, words of 5+ letters only, so real street
+    names like "Lance" or "Aveline" are left alone."""
+    if len(tok) < 5 or not tok.isalpha() or tok in _KNOWN_ADDR:
+        return tok
+    for target in _TYPO_TARGETS:
+        if tok[0] == target[0] and abs(len(tok) - len(target)) <= 1 and OSA.distance(tok, target) <= 1:
+            return target
+    return tok
+
+
 def normalize_address(raw, country=""):
     text = raw.replace("°", " ").replace("º", " ")  # N° 45 -> N 45 (unidecode would give "deg")
     for native, eng in INDIC_STATES.items():
@@ -253,18 +291,22 @@ def normalize_address(raw, country=""):
     parts = [_basic(p) for p in transliterate(text, _indic_dict()).split(",")]
     text = " ".join(states.get(p, p) for p in parts if p)
     text = COMPOUND_NUM.sub(lambda m: str(_TENS[m.group(1)] + _UNITS[m.group(2)]), text)
+    text = GLUED_SUFFIX.sub(r"\1 \2", text)
     local = ADDR_COUNTRY.get(country, {})
-    india = country == "India"
+    india, france = country == "India", country == "France"
     toks = []
     for t in text.split():
-        if country == "France" and t == "b" and toks and toks[-1].isdigit():
+        if france and t == "b" and toks and toks[-1].isdigit():
             t = "bis"                                     # 94 B -> 94 bis
         if india:
             t = IN_CITY.get(t) or IN_PREMISE.get(t, t)
+        t = _street_typo(t)
         t = local.get(t) or ADDR_COMMON.get(t) or ROMAN.get(t) or ADDR_NUMWORDS.get(t, t)
         t = re.sub(r"^(\d+)(st|nd|rd|th)$", r"\1", t)  # 2nd -> 2, 45th -> 45
         t = re.sub(r"^0+(\d)", r"\1", t)                # 0049 -> 49, 0684 -> 684
         if t in ADDR_NOISE or (india and t == "no" and toks and toks[-1] == "no"):
+            continue
+        if france and t in ADDR_FR_DROP:
             continue
         toks.append(t)
     return " ".join(toks)

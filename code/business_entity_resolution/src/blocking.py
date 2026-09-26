@@ -20,8 +20,36 @@ from sparse_dot_topn import sp_matmul_topn
 
 from common import WORK, read_pairs
 
-K_NAME, K_ADDR = 20, 20
-MAX_DF = 0.02
+K_NAME, K_ADDR, K_NOSTATE = 30, 30, 10
+MAX_DF = 1.0            # v2: per-state search is fast enough to keep common tokens (full recall)
+
+
+def _state_of(addrs, country):
+    """Canonical state token of each normalized address ("" if none). True matches always
+    share the state when both sides have one (0 exceptions in 300k train pairs)."""
+    from normalize import STATE_COMPONENT
+    tokens = set(STATE_COMPONENT.get(country, {}).values())
+    out = []
+    for a in addrs:
+        out.append(next((t for t in a.split() if t in tokens), ""))
+    return np.array(out)
+
+
+def _topk_by_state(Q, P, q_state, p_state, k):
+    """Top-k within each state, plus every query against pool records that have no state."""
+    qi_all, pj_all = [], []
+    nostate = np.where(p_state == "")[0]
+    for st in np.unique(q_state):
+        qi = np.where(q_state == st)[0]
+        pi = np.arange(len(p_state)) if st == "" else np.where(p_state == st)[0]
+        if len(pi) == 0:
+            continue
+        a, b, _ = _topk(Q[qi], P[pi], k)
+        qi_all.append(qi[a]); pj_all.append(pi[b])
+    if len(nostate):
+        a, b, _ = _topk(Q, P[nostate], K_NOSTATE)
+        qi_all.append(a); pj_all.append(nostate[b])
+    return np.concatenate(qi_all), np.concatenate(pj_all)
 
 
 def load(split, i, country):
@@ -62,8 +90,10 @@ def block_country(q, pool, k_final):
     Pa, Qa = _vectorize(pool["addr"].to_list(), q["addr"].to_list(), token_pattern=r"\S+",
                         min_df=2, max_df=MAX_DF)
     t.append(time.time())
-    n_qi, n_pj, _ = _topk(Qn, Pn, K_NAME)
-    a_qi, a_pj, _ = _topk(Qa, Pa, K_ADDR)
+    country = q["country"][0]
+    q_state, p_state = _state_of(q["addr"].to_list(), country), _state_of(pool["addr"].to_list(), country)
+    n_qi, n_pj = _topk_by_state(Qn, Pn, q_state, p_state, K_NAME)
+    a_qi, a_pj = _topk_by_state(Qa, Pa, q_state, p_state, K_ADDR)
     t.append(time.time())
     pairs = np.unique(np.concatenate([
         np.stack([n_qi, n_pj], 1), np.stack([a_qi, a_pj], 1)]), axis=0)
@@ -97,12 +127,12 @@ def evaluate(n_val):
     for country in val["country"].unique().sort():
         q = val.filter(pl.col("country") == country)
         pool = pl.concat([load("train", 2, country), load("train", 3, country)])
-        cand = block_country(q, pool, k_final=100)
+        cand = block_country(q, pool, k_final=40)
         saved.append(cand.with_columns(pl.lit(country).alias("country")))
         t = truth.filter(pl.col("s1").is_in(q["entity_id"]))
         hit = t.join(cand, on=["s1", "cand"], how="left")
         n_true = t.height
-        for k in (1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 100):
+        for k in (1, 2, 3, 5, 8, 10, 15, 20, 30, 40):
             rec = hit.filter(pl.col("rank") <= k).height / n_true
             per = cand.filter(pl.col("rank") <= k).height / q.height
             rows.append((country, k, rec, per))

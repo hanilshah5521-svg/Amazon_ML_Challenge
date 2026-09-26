@@ -93,7 +93,30 @@ competitions and benchmarks, and industry systems. Main takeaways:
   results were lost.
 - The held-out F0.5 estimate matched the leaderboard for submission 2 (0.915).
 
-## 7. Planned next (for submission 3)
+## 7. Submission 3 build (26 Sep, leaderboard 0.967)
+- **Error analysis of the 0.915 model** (`error_analysis.py`, kept on `main`):
+  - Lost points by cause (India / US): candidate-search misses +0.041 / +0.020, false accepts +0.026 / +0.014, false rejects +0.024 / +0.027.
+  - 100% of false accepts are decoys that belong to no Source 1 record.
+- **Decoy patterns** found by reading the errors:
+  - entity-type change (Trust → Private Limited, Partnership → LLP)
+  - Private vs public limited
+  - compound unit numbers (10-2-10 vs 10-2-12)
+  - one business or person word swapped (Brashear → Atherton)
+  - leading person name replaced
+- **Name ↔ address:** same name with a *conflicting* address means a namesake. Same address with different real-word names means a neighbour. Invented one-word names at the exact address are genuine trade names. Addresses were split into agree / conflict / missing per part.
+- **No-match records:** 7% had a strong false candidate. Those decoys are lone single-source candidates with 10× more number conflicts (18.4% vs 1.8%). This led to stage-2 record-level features and the per-record expected-F0.5 decision.
+- **Candidate volume:** test has ~20–25% more Source 2/3 records per Source 1 than train, i.e. more decoys. Matches per record, measured by group size, showed no bias against large groups (recall ~87% everywhere).
+- **France without labels:**
+  - `france_review.py` re-scored French test candidates by category.
+  - Inconsistent decisions on "same name + street, different number + legal swap" motivated the group-consistency features.
+  - Acronyms (PS, CMP) and business-word swaps (EHPAD → Sportive) became features.
+- **Learning curve:** 2k → 16k training records gave +0.003 per doubling, so 200k records were used.
+- **Measured ablation** (held-out half B, India / US): base 0.937 / 0.947 → v2 features 0.975 / 0.979 → + stage 2 0.975 / 0.980.
+- **Per-state candidate recall at top-10:** India 95.6%, US 97.4%.
+- **Leaderboard 0.967.**
+- **Dropped this round** (no evidence yet): transitive Source 2↔3 expansion, reverse search, ensembles, embeddings/LLMs, AWS.
+
+## 8. Planned next (for submission 4)
 1. Full-recall candidate search (undo the speed shortcut), run overnight.
 2. Normalizer v2 (France and global rules), then re-normalize.
 3. Train on ~200k Source 1 records instead of 20k.

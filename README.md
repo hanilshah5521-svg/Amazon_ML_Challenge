@@ -1,117 +1,72 @@
-# Amazon ML Challenge 2026: Business Entity Resolution
+# Amazon ML Challenge 2026: Business Entity Resolution (branch `0.967`)
 
-For every business record in **Source 1** (the deduplicated reference), find all records in
-**Source 2** and **Source 3** that refer to the same real-world business. Records have a name, an
-address and a country (US and India in train; France appears only in test). Scoring is
-**macro F0.5** per Source 1 record: precision counts twice as much as recall, and a record with no
-true match scores 1.0 only if nothing is predicted.
+For each business in **Source 1**, find every record in **Sources 2 and 3** that refers to the same
+real-world business. Records have a name, an address and a country (US and India in train; France
+appears only in test). The metric is macro **F0.5** per Source 1 record.
 
-**Current leaderboard score: 0.915** (LightGBM matcher, 25 Sep 2026).
+**This branch contains exactly the code that produced leaderboard score 0.967** (submission 3,
+26 Sep 2026). Analysis scripts, research notes and notebooks are on `main`. The history of
+everything tried is in [`documentation/`](documentation/).
 
 ## Pipeline
-
 ```
-raw TSVs ─▶ normalize ─▶ candidate search (blocking) ─▶ pair features ─▶ LightGBM ─▶ decisions ─▶ TSV outputs
+raw TSVs ─▶ normalize (v2) ─▶ per-state candidate search ─▶ ~70 pair features ─▶ LightGBM stage 1
+        ─▶ stage 2 (group consistency) ─▶ per-record expected-F0.5 decision ─▶ one owner per S2/S3 ─▶ TSVs
 ```
 
-1. **Normalization** (`normalize.py`)
-   - Indian-script names (Hindi, Telugu, Tamil, Kannada, Bengali, Gujarati, Punjabi, Malayalam,
-     Odia) become English through a word dictionary **learned from the training pairs**. It covers
-     96% of test Indic tokens; unidecode is the fallback.
-   - Accents are removed; text is lowercased; punctuation becomes spaces; dotted abbreviations
-     are joined (`L.L.C.` → `llc`).
-   - Legal forms are canonicalized (Private Limited / Pvt Ltd, SARL, LLC…).
-   - Alias markers are handled: in `X f/k/a Y` and `X doing business as Y`, Y is kept as the
-     entity's own name.
-   - Look-alike digits are fixed (`Pub1ications`, `5ARL`).
-   - Addresses: USPS and French street abbreviations, state/region canonicalization
-     (TG ≡ Telangana ≡ తెలంగాణ, Nord ≡ Hauts-de-France), Indian old/new city names, ordinals
-     and number words, Roman numerals, and filler words (Unit, Apt, PMB, N°…) are handled.
-   - Three name views: `name`, `name_core` (legal forms and stopwords removed) and `name_key`
-     (generic business words also removed).
-2. **Candidate search** (`blocking.py`), run per country:
-   - top-20 by character 3-gram TF-IDF on names (spaces removed)
-   - top-20 by word TF-IDF on addresses
-   - the two lists are merged and re-ranked, using `sparse_dot_topn` for sparse top-K search
-3. **Pair features** (`pair_features.py`, `lgbm_matcher.py`):
-   - string similarities on name, core and key
-   - house-number agreement
-   - legal-form conflict
-   - empty-address flags
-   - comparisons against the other candidates of the same Source 1 record (gap to best, rank,
-     number of close candidates)
-4. **Matcher** (`lgbm_matcher.py`): LightGBM, validated with 5-fold cross-validation grouped by
-   Source 1 record. A candidate is accepted if its probability clears the per-country threshold,
-   and each Source 2/3 record goes only to its best Source 1 record.
-5. **Output**: `output/matching_results.tsv` and `output/candidate_pairs.tsv`, checked with the
-   organisers' `validate_submission.py`.
+1. **Normalize** (`normalize.py`)
+   - Indic scripts go through a dictionary learned from training pairs, with `anyascii` as the
+     fallback.
+   - Legal forms, alias markers (f/k/a, DBA) and look-alike digits are handled.
+   - Address standards: USPS and AFNOR (France) street types, state/region canonicalization,
+     Indian city aliases, ordinals, and filler words removed.
+2. **Candidate search** (`blocking.py`): character 3-gram TF-IDF on names and word TF-IDF on
+   addresses, top-30 each **within the same state**, plus a pass for records with no state. The
+   top 15 per record go to the model.
+3. **Features** (`lgbm_matcher.build_features` + `features_v2.py`): string similarities,
+   entity-type changes, compound house numbers, rarity-weighted distinctive vs generic words,
+   invented trade name, acronym, website name, state agree/conflict/missing, name and address
+   crowding, and same-name group features.
+4. **Model** (`model_v2.py`): LightGBM stage 1 (pairs). Stage 2 re-scores each pair using the
+   stage-1 results of the record's other candidates.
+5. **Decision:** per record, accept the top-n candidates that maximize expected F0.5 (n can be 0).
+   Each Source 2/3 record goes only to its best Source 1 record. France uses the stricter US
+   settings.
+6. **Output:** `output/v<N>_lgbm_two_stage/` (never overwritten), checked with the organizers'
+   validator using `--check-ids`.
 
-## Repository layout
-
-| Path | Contents |
+## Files
+| File | Role |
 |---|---|
-| `code/business_entity_resolution/src/common.py` | Paths and TSV/ground-truth loaders |
-| `…/src/normalize.py` | All normalization rules; builds the Indic dictionary; writes normalized parquet files |
-| `…/src/blocking.py` | Candidate search: `eval` (recall on held-out train) and `test` modes |
-| `…/src/pair_features.py` | Legal-form and house-number checks |
-| `…/src/lgbm_matcher.py` | LightGBM training, cross-validated evaluation, `submit` mode |
-| `…/src/evaluation.py` | Macro F0.5 scorer (README formula), match decision rule, submission TSV writer |
-| `…/src/eda.py`, `edge_miner.py`, `france_miner.py`, `france_patterns.py`, `explore_neighbors.py`, `blocking_analysis.py` | Analysis only: where the rules came from. Not needed to reproduce outputs. |
-| `research_notes/` | Literature and competition research (blocking, matchers, normalization, benchmarks, industry systems) |
-| `phase-1.ipynb`, `Shreya nb - 2.ipynb` | Team exploration notebooks |
+| `src/common.py` | Paths and loaders |
+| `src/normalize.py` | Normalization rules and the Indic dictionary |
+| `src/blocking.py` | Per-state candidate search (`eval` for training records, `test` for test) |
+| `src/pair_features.py` | Legal-form and house-number relations |
+| `src/lgbm_matcher.py` | The 24 base pair features (used by v2) |
+| `src/features_v2.py` | The v2 feature groups |
+| `src/model_v2.py` | Two-stage training, ablation report, decision rules, test prediction |
+| `src/evaluation.py` | F0.5 scorer, decision helpers, TSV writer, versioned output folders |
+| `src/run_v2.sh` | One command that runs the whole pipeline |
+| `requirements.txt` | Exact library versions (Python 3.10) |
 
-## How to run
-
-Put the competition data at `student_resource/dataset/{train,test}/` (it's git-ignored).
-Intermediate files go to `work/` and outputs to `output/`. Run from
-`code/business_entity_resolution/src/`:
-
+## Reproduce
+Put the competition data at `student_resource/dataset/{train,test}/` (it's git-ignored). Then:
 ```bash
-pip install -r ../requirements.txt   # exact versions used for the 0.915 run (Python 3.10)
-python normalize.py build-dict      # learn the Indic -> English word dictionary
-python normalize.py train           # normalize the train sources
-python normalize.py test            # normalize the test sources
-python blocking.py eval 20000       # held-out recall + labelled candidates for training
-python blocking.py test 20          # test candidates (saved per country, resumable)
-python lgbm_matcher.py              # cross-validated F0.5 on the held-out records
-python lgbm_matcher.py submit       # train, predict, write output/, run the validator
+pip install -r code/business_entity_resolution/requirements.txt
+bash code/business_entity_resolution/src/run_v2.sh      # ~2.5 h on 16 GB RAM / 18 threads
 ```
-
-Hardware used: 16 GB RAM, 18 CPU threads, no GPU. Test candidate search takes about 2 hours
-(France ~4 min, India ~64 min, US ~52 min). Everything else takes minutes.
+Check the result against the submitted file's SHA-256 prefix, `b5edd37b8508fe00`. Tiny
+floating-point or tie-order differences can flip a handful of borderline pairs.
 
 ## Results
+| | India | US | Leaderboard |
+|---|---|---|---|
+| Held-out F0.5 (half B of 200k training records) | 0.975 | 0.980 | **0.967** |
+| Candidate recall at top-10 | 95.6% | 97.4% | |
 
-| Version | Held-out F0.5 (India / US) | Leaderboard |
-|---|---|---|
-| **LightGBM + decoy checks** | **0.913 / 0.942** | **0.915** |
-
-This repository reproduces the 0.915 submission: `output/matching_results.tsv` had SHA-256 prefix
-`8b1b22a6b36b15ea`. With the pinned `requirements.txt`, and the same thread count (tiny floating-point
-or tie-order differences can flip a handful of borderline pairs), a rerun should match or differ
-negligibly. Also: the committed `normalize.py` is the
-version that produced the normalized data used for it (verified on 40k re-normalized records).
-
-Candidate recall at top-10 (held-out): India 90.5%, US 95.0%.
-
-## Competition compliance
-
-- Only the provided data is used. There are **no external databases, APIs or geocoding**. The
-  Indic dictionary is learned from the training pairs; the static tables are general language
-  conventions (street abbreviations, state codes).
-- Models and libraries are permissively licensed. LightGBM (MIT) is far below the 8B-parameter
-  limit.
-
-## Next steps
-
-- Newer France and global normalization rules (N°/apartment drops, French generic words, street-type
-  typo fix, `12bis` split, `5ARL`/`8ordeaux` look-alikes) are kept out of this version and will be
-  added with the next submission.
-- Run full-recall candidate search. The current run trades 2–4% recall for speed
-  (`K_NAME/K_ADDR=20`, `MAX_DF=0.02`).
-- Train on ~10× more Source 1 records.
-- Add features: address crowding, name rarity, city agreement, house-number distance, the Source
-  2/3 record's best vs. second-best owner, synthetic decoys.
-- Choose, per Source 1 record, how many candidates to accept, to maximize expected F0.5.
-- Replace `unidecode` (GPL) with `anyascii` (ISC) before the final package; add a
-  `requirements.txt` and a one-command pipeline script.
+## Compliance
+- Only the provided data is used: no external databases, APIs or geocoding.
+- The Indic dictionary is learned from the training pairs. Static tables are general language
+  conventions (USPS/AFNOR abbreviations, state codes).
+- All libraries are permissively licensed (MIT/BSD/ISC). LightGBM is far below the
+  8B-parameter limit.

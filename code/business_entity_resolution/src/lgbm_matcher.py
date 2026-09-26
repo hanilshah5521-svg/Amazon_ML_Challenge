@@ -85,7 +85,7 @@ def training_frame():
 
 def submit():
     import subprocess, sys
-    from evaluation import OUT, write_tsv
+    from evaluation import new_output_dir, write_tsv
     from common import DATA, ROOT, read_source
     tr = training_frame()
     model = lgb.train(PARAMS, lgb.Dataset(tr.select(FEATURES).to_numpy(), tr["y"].to_numpy()), 400)
@@ -105,7 +105,7 @@ def submit():
         del feat
     feat, matches = pl.concat(kept), pl.concat(parts)
     ids = s1["entity_id"]
-    OUT.mkdir(exist_ok=True)
+    OUT = new_output_dir("lgbm")
     write_tsv(feat.select("s1", "cand"), "candidate_entity_ids", OUT / "candidate_pairs.tsv", ids)
     write_tsv(matches, "matched_entity_ids", OUT / "matching_results.tsv", ids)
     print(f"candidates {feat.height:,} ({feat.height / len(ids):.2f}/S1), matches {matches.height:,}, "
