@@ -8,6 +8,17 @@ from common import ROOT
 OUT = ROOT / "output"
 
 
+def new_output_dir(tag):
+    """Create output/v<N>_<tag>/ with N one higher than any existing version. Never reuses or
+    overwrites an existing folder, so every submission keeps its own files."""
+    OUT.mkdir(exist_ok=True)
+    nums = [int(p.name[1:].split("_")[0]) for p in OUT.iterdir()
+            if p.is_dir() and p.name.startswith("v") and p.name[1:].split("_")[0].isdigit()]
+    path = OUT / f"v{max(nums, default=0) + 1}_{tag}"
+    path.mkdir()          # raises if it somehow exists: never overwrite
+    return path
+
+
 def f05_macro(pred, truth, s1_ids):
     """Macro F0.5 over s1_ids. pred/truth: DataFrames (s1, cand)."""
     p = pred.group_by("s1").agg(pl.col("cand").alias("p"))

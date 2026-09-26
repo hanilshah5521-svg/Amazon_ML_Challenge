@@ -1,11 +1,12 @@
 """Shared paths and I/O helpers."""
+import os
 from pathlib import Path
 
 import polars as pl
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "student_resource" / "dataset"
-WORK = ROOT / "work"
+WORK = Path(os.environ["WORK_DIR"]) if os.environ.get("WORK_DIR") else ROOT / "work"
 WORK.mkdir(exist_ok=True)
 
 

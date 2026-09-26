@@ -93,7 +93,30 @@ competitions and benchmarks, and industry systems. Main takeaways:
   results were lost.
 - The held-out F0.5 estimate matched the leaderboard for submission 2 (0.915).
 
-## 7. Planned next (for submission 3)
+## 7. Submission 3 build (26 Sep, leaderboard 0.967)
+- **Error analysis of the 0.915 model** (`error_analysis.py`, kept on `main`):
+  - Lost points by cause (India / US): candidate-search misses +0.041 / +0.020, false accepts +0.026 / +0.014, false rejects +0.024 / +0.027.
+  - 100% of false accepts are decoys that belong to no Source 1 record.
+- **Decoy patterns** found by reading the errors:
+  - entity-type change (Trust → Private Limited, Partnership → LLP)
+  - Private vs public limited
+  - compound unit numbers (10-2-10 vs 10-2-12)
+  - one business or person word swapped (Brashear → Atherton)
+  - leading person name replaced
+- **Name ↔ address:** same name with a *conflicting* address means a namesake. Same address with different real-word names means a neighbour. Invented one-word names at the exact address are genuine trade names. Addresses were split into agree / conflict / missing per part.
+- **No-match records:** 7% had a strong false candidate. Those decoys are lone single-source candidates with 10× more number conflicts (18.4% vs 1.8%). This led to stage-2 record-level features and the per-record expected-F0.5 decision.
+- **Candidate volume:** test has ~20–25% more Source 2/3 records per Source 1 than train, i.e. more decoys. Matches per record, measured by group size, showed no bias against large groups (recall ~87% everywhere).
+- **France without labels:**
+  - `france_review.py` re-scored French test candidates by category.
+  - Inconsistent decisions on "same name + street, different number + legal swap" motivated the group-consistency features.
+  - Acronyms (PS, CMP) and business-word swaps (EHPAD → Sportive) became features.
+- **Learning curve:** 2k → 16k training records gave +0.003 per doubling, so 200k records were used.
+- **Measured ablation** (held-out half B, India / US): base 0.937 / 0.947 → v2 features 0.975 / 0.979 → + stage 2 0.975 / 0.980.
+- **Per-state candidate recall at top-10:** India 95.6%, US 97.4%.
+- **Leaderboard 0.967.**
+- **Dropped this round** (no evidence yet): transitive Source 2↔3 expansion, reverse search, ensembles, embeddings/LLMs, AWS.
+
+## 8. Planned next (for submission 4)
 1. Full-recall candidate search (undo the speed shortcut), run overnight.
 2. Normalizer v2 (France and global rules), then re-normalize.
 3. Train on ~200k Source 1 records instead of 20k.
@@ -102,3 +125,103 @@ competitions and benchmarks, and industry systems. Main takeaways:
 5. Choose, per record, how many matches to accept to maximize expected F0.5. Learn a candidate cut
    that keeps F0.5.
 6. Replace unidecode with anyascii.
+
+## 9. Improvement round (26 Sep, evening): learned candidate cut, decoy words, more data
+
+Starting point: the 0.967 pipeline, reproduced on a new machine (Python 3.12 instead of 3.10, 6 normalization / 4 feature workers, 15 GB RAM).
+Every change below was measured on the **same held-out half B** (200k random train Source 1 records, halves by `default_rng(0)`), kept only if the
+weighted score (0.47·India + 0.38·US, normalised) rose by at least 0.0005 and neither country dropped by more than 0.0005. Each experiment ran in its own
+work folder so nothing was overwritten. Nothing was tuned on the leaderboard.
+
+### 9.1 Baseline reproduction and loss breakdown
+| | India | US |
+|---|---|---|
+| 24 base features | 0.9364 | 0.9469 |
+| + v2 features (stage 1) | 0.9745 | 0.9791 |
+| **+ stage 2 (final baseline)** | **0.9751** | **0.9799** |
+
+Where the lost F0.5 sits (baseline final model, half B):
+
+| Cause | India | US |
+|---|---|---|
+| true match not in the top-15 candidates | 0.0123 | 0.0079 |
+| true candidates rejected by the model | 0.0089 | 0.0084 |
+| false accepts | 0.0030 | 0.0027 |
+| no-match record given a match | 0.0006 | 0.0012 |
+| total | 0.0249 | 0.0201 |
+
+Wrong merges are the smallest bucket; candidate recall and rejected true candidates are ~85% of the loss. Baseline test run: 5,731,280 matches, 5.9% of S1 empty,
+validator PASS (`output/v1_lgbm_two_stage/`); SHA-256 differs from the reference file (different Python / thread order).
+
+### 9.2 Experiments
+| Experiment | India | US | weighted | vs baseline | Verdict |
+|---|---|---|---|---|---|
+| T3 decoy / noise word features | 0.9762 | 0.9804 | 0.9781 | +0.0011 / +0.0005 | **kept** |
+| RK learned candidate cut, K=8 (15 → 8 candidates per S1) | 0.9772 | 0.9813 | 0.9790 | +0.0020 / +0.0014 | **kept** |
+| M1 = RK + T3 | 0.9781 | 0.9814 | 0.9796 | +0.0030 / +0.0016 | **kept** |
+| M2 = M1 + 200k extra training S1 (400k total) | 0.9790 | 0.9818 | 0.9803 | +0.0039 / +0.0020 | **kept** |
+| **M3 = M2 without the inherited `is_india` feature, countries taken from the data (final)** | **0.9788** | **0.9818** | **0.9802** | **+0.0037 / +0.0019** (−0.0002 / −0.0000 vs M2) | **adopted (open-set countries, no measurable cost)** |
+| M2 + early-stopped rounds (1749 / 310 rounds instead of 600) | 0.9790 | 0.9820 | 0.9805 | +0.00004 / +0.0002 vs M2 | dropped (< 0.0005, 3× slower) |
+| T4 + T5 normalization rules + S1-vocabulary spell correction (on the baseline pipeline) | 0.9736 | 0.9799 | 0.9766 | −0.0015 / +0.0000 | dropped (India worse: more false accepts) |
+| M2 with K=10 (10 candidates per S1) | 0.9788 | 0.9822 | 0.9804 | −0.0002 / +0.0003 vs M2 | dropped (no gain, 25% more candidates) |
+
+**T3, decoy / noise words** (`word_lists.py`, features `decoy_added`, `noise_added`, `decoy_dropped`, `n_decoy_added`). A generic word added by the noise is a *decoy* if the
+house numbers then disagree (a different business: partners, holdings, group in the US; enterprises, industries, trading, ventures … in India; groupe, holding,
+participations, distribution … in France) and *noise* if they agree (center, service, services …). The lists are learned without labels from candidate pairs
+(train for India/US, the unlabelled test candidates for France).
+
+**RK, learned cut** (`ranker.py`). Blocking still keeps the top-40 per S1 by `name_sim + addr_sim`. A small LightGBM on 28 cheap pair features (similarities, ranks,
+gaps to the best candidate, state relation, house-number overlap, token Jaccards; no per-pair Python) re-ranks them and only the best K go to the matcher, so
+`candidate_pairs.tsv` is exactly what the matcher scores. Out-of-fold recall of true matches (200k held-out S1):
+
+| K | India raw cut | India learned | US raw cut | US learned |
+|---|---|---|---|---|
+| 6 | 0.9215 | 0.9529 | 0.9363 | 0.9620 |
+| 8 | 0.9491 | **0.9710** | 0.9657 | **0.9807** |
+| 10 | 0.9548 | 0.9742 | 0.9714 | 0.9836 |
+| 15 | 0.9601 | 0.9757 | 0.9765 | 0.9853 |
+| 40 (ceiling) | 0.9760 | 0.9760 | 0.9854 | 0.9854 |
+
+Eight learned candidates beat fifteen raw candidates in both countries, and the matcher's training set halves (1.6M instead of 3.0M pairs for 200k S1) while
+holding more true matches, which is what made the extra training data affordable. The organisers' update says a smaller candidate set per S1 ranks higher; K=8 is
+the knee (6 → 8 gains ~1.8 recall points, 8 → 10 only 0.3, 10 → 12 only 0.1).
+
+**M2, more training data.** 200k extra S1 (disjoint from the held-out set, `blocking.py extra`) are added to training and never scored, so results stay comparable.
+Loss breakdown, M2 (half B): India rejected 0.0090, not-in-top-K 0.0086, false accepts 0.0028, no-match 0.0005, total 0.0210 (baseline 0.0249);
+US rejected 0.0090, not-in-top-K 0.0058, false accepts 0.0022, no-match 0.0011, total 0.0182 (baseline 0.0201).
+
+**Dropped: T4 + T5.** Candidate recall rose (US recall@15 0.9765 → 0.9792, India 0.9601 → 0.9606) but F0.5 did not follow: the extra cleaning made decoys look more
+like matches (India false accepts 0.0030 → 0.0045, no-match errors 0.0006 → 0.0017). Which of the two hurts was not isolated.
+
+### 9.3 Error studies (M2 model, out-of-fold)
+- **Rejected true pairs** are only 1.8% of true pairs (24,332 of 1,351,943). Typical cases: the candidate has no address (name identical) or the address matches but the name is an
+  invented trade name. For empty-address candidates with the same name key the model is essentially perfectly calibrated (mean predicted probability vs true rate:
+  1 S1 with that name 0.986 / 0.985; 2 → 0.487 / 0.499; 3 → 0.349 / 0.348; 4+ → 0.043 / 0.043). The 360k candidates with 4+ same-name S1 records (chains) have a 4.3%
+  true rate, about 1 true owner in 23 and not identifiable without an address, so most of this loss is an information limit.
+- **Decision sensitivity.** Held-out F0.5 is flat around the chosen decision: a threshold 0.05 stricter costs −0.0004 (India) / −0.0001 (US), 0.10 stricter −0.0009 / −0.0005;
+  the expected-F rule with miss rate 0 … 0.5 stays within 0.0002. No hedge was applied.
+- **Unowned S2/S3 records, train truth vs test predictions** (`analyze_unowned.py`): unowned per S1 1.22 (train) vs 2.56 India / 2.39 US / 2.25 France (test). Orphan clusters
+  (S2 + S3 groups sharing name key, first house number and state with no S1 record) are 4.7% (India), 9.5% (US), 16.7% (France) of the unowned test records vs 1.2% / 0.7% in
+  train, i.e. 8–27× more per S1 but still a minority; most extra unowned records are lone records. Simulating the shift by dropping S1 records from the held-out set would
+  over-create orphan clusters, so a whole-state, decoy-density-matched holdout was not built.
+
+**Open-set countries (M3).** The inherited pipeline used an `is_india` model feature and looped over the hard-coded countries France / India / US when predicting. The task
+says country must be an open set, so the final code has no country feature, takes the labelled countries from the training data, iterates over the countries present in the
+test files, and gives every country without labels the strictest (highest-threshold) labelled-country decision settings (what France already used). Country-specific *text*
+rules (state names, street types, French/Indian address conventions in `normalize.py`) remain, as the task recommends country-specific address patterns. Cost on held-out
+data: −0.0002 India, −0.0000 US.
+
+### 9.4 Not done (and why)
+- Whole-state holdout with decoy-matched density (T6): design unclear after the unowned-records study, no labels for the test shift.
+- Typo-vs-swapped-word alignment, separator-free numbers, no-match classifier, owner competition before the choice (T9): left as the next step; the false-accept + no-match
+  buckets are only ~0.004 of the loss.
+- Transformer cross-encoder (T10): no time on this machine.
+- France-specific normalization (city → region, web-name matching, look-alike legal forms) is only partly covered (T3 word list for France); T4 rules were dropped with T5.
+
+### 9.5 Submissions of this round
+| # | Files | Method | Held-out (India / US) | Expected leaderboard | Candidates |
+|---|---|---|---|---|---|
+| 4 (v1) | `output/v1_lgbm_two_stage/` | reproduction of the 0.967 pipeline | 0.9751 / 0.9799 | 0.967 (reference) | 15 per S1 |
+| 4 (v2) | `output/v2_lgbm_two_stage/` | learned cut K=8 + T3 | 0.9781 / 0.9814 | ~0.969–0.970 | 8 per S1 |
+| 4 (v3) | `output/v3_lgbm_two_stage/` | learned cut K=8 + T3 + 400k training S1 (still with the `is_india` feature) | 0.9790 / 0.9818 | ~0.970 | 8 per S1 |
+| **4 (v4, final)** | `output/v4_lgbm_two_stage/` | same, country-agnostic (no `is_india`, countries from the data) | **0.9788 / 0.9818** | **~0.970 (0.966–0.972)** | 8 per S1 |

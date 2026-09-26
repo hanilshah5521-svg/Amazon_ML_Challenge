@@ -8,16 +8,20 @@ updated after every experiment and submission.
 | [experiments.md](experiments.md) | Everything tried so far, in order, with measured results, including what failed or was dropped |
 | [submissions/01_handweighted_0.725.md](submissions/01_handweighted_0.725.md) | Submission 1: hand-weighted score (leaderboard 0.725) |
 | [submissions/02_lightgbm_0.915.md](submissions/02_lightgbm_0.915.md) | Submission 2: LightGBM matcher (leaderboard 0.915) |
+| [submissions/03_lgbm_two_stage_0.967.md](submissions/03_lgbm_two_stage_0.967.md) | Submission 3: two-stage LightGBM with v2 features (leaderboard 0.967) |
+| [submissions/04_learned_cut_decoy_words_more_data.md](submissions/04_learned_cut_decoy_words_more_data.md) | Submission 4: learned candidate cut (8 per S1), decoy/noise words, 400k training records (expected ~0.970) |
 
 ## Submissions at a glance
 
 | # | Date / time (IST) | Method | Held-out F0.5 (India / US) | Leaderboard | Status |
 |---|---|---|---|---|---|
 | 1 | 25 Sep, ~23:40 | Hand-weighted name + address score | 0.757 / 0.800 | 0.725 | superseded |
-| 2 | 25 Sep, ~23:55 | LightGBM + decoy checks | 0.913 / 0.942 | **0.915** | **current best** |
+| 2 | 25 Sep, ~23:55 | LightGBM + decoy checks | 0.913 / 0.942 | 0.915 | superseded |
+| 3 | 26 Sep, ~10:00 | Two-stage LightGBM, v2 features, per-state search, 200k training records | 0.975 / 0.980 | **0.967** | superseded |
+| 4 | 26 Sep, ~22:05 | Learned candidate cut (8 per S1) + decoy/noise-word features + 400k training records | 0.979 / 0.982 | expected ~0.970 (0.969-0.971), not yet uploaded | **current best** |
 
 ## How we evaluate
-- **Held-out set:** 20,000 random train Source 1 records (seed 42), searched against the full train
+- **Held-out set:** 200,000 random train Source 1 records (seed 42; 20,000 in the early submissions), searched against the full train
   Source 2+3 pool, as on test.
 - **Metric:** macro F0.5 per Source 1 record, exactly as in the challenge README (singletons score
   1.0 only when the prediction is empty).
