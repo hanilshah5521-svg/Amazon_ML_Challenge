@@ -225,3 +225,18 @@ data: −0.0002 India, −0.0000 US.
 | 4 (v2) | `output/v2_lgbm_two_stage/` | learned cut K=8 + T3 | 0.9781 / 0.9814 | ~0.969–0.970 | 8 per S1 |
 | 4 (v3) | `output/v3_lgbm_two_stage/` | learned cut K=8 + T3 + 400k training S1 (still with the `is_india` feature) | 0.9790 / 0.9818 | ~0.970 | 8 per S1 |
 | **4 (v4, final)** | `output/v4_lgbm_two_stage/` | same, country-agnostic (no `is_india`, countries from the data) | **0.9788 / 0.9818** | **~0.970 (0.966–0.972)** | 8 per S1 |
+
+## 10. Submission 5 round (27 Sep, branch `patel`): second candidate source before the learned cut
+
+- **Base:** the v4 pipeline (0.973 on the leaderboard), reproduced on a 10-core / 16 GB Mac as **EXP-0**.
+  - Held-out half B: India 0.97862, US 0.98188. The documented v4 numbers are 0.9788 / 0.9818.
+  - Test matches are within 0.02% of v4 in every country.
+- **Leak fix (both experiments):** held-out S1 are cut with out-of-fold ranker scores. v4's cut used a ranker trained on them.
+- **EXP-1:** the learned cut's input becomes the v4 per-state TF-IDF top-40 ∪ the `patel` S2/S3→S1 blocker (`code/patel_blocker/`). The ranker gets `our_rank` / `our_rr` features. K stays 8; everything else is unchanged.
+- **Recall@8 (out-of-fold):** India 0.9709 → **0.9885**, US 0.9808 → **0.9908**.
+- **Half B:**
+  - India 0.97862 → **0.98358**; US 0.98188 → **0.98484**.
+  - Weighted **+0.00407**, and **+0.00415** on the 50k half-B S1 outside the substitution map's learning half, so there's no leak.
+  - The "not in top-K" loss fell from 0.0088 / 0.0060 to 0.0031 / 0.0023.
+  - US false accepts rose from 0.0022 to 0.0027.
+- **Kept.** Details are in `submissions/05_patel_candidate_union.md`, and the forensic analysis behind the change is in `patel_forensics_and_plan.md`.

@@ -80,7 +80,25 @@ def _rowdot(A, B, ai, bj, chunk=2_000_000):
 
 
 
-def block_country(q, pool, k_final):
+def load_ours(split, s1_ids):
+    """Optional extra candidates from the 'patel' S2/S3->S1 blocker (OUR_CANDS_DIR/<split>/{records,cands}.parquet),
+    flipped to (s1, cand, our_rank, our_rr). None when OUR_CANDS_DIR is not set."""
+    import os
+    root = os.environ.get("OUR_CANDS_DIR")
+    if not root:
+        return None
+    from pathlib import Path
+    d = Path(root) / split
+    ids = pl.read_parquet(d / "records.parquet", columns=["rid", "entity_id"])
+    c = pl.read_parquet(d / "cands.parquet", columns=["q", "s1", "rank", "rr"])
+    c = (c.join(ids.rename({"rid": "s1", "entity_id": "s1_eid"}), on="s1")
+          .join(ids.rename({"rid": "q", "entity_id": "cand"}), on="q")
+          .select(pl.col("s1_eid").alias("s1"), "cand", pl.col("rank").cast(pl.Float32).alias("our_rank"),
+                  pl.col("rr").cast(pl.Float32).alias("our_rr")))
+    return c.filter(pl.col("s1").is_in(s1_ids))
+
+
+def block_country(q, pool, k_final, ours=None):
     t = [time.time()]
     q_name = [s.replace(" ", "") for s in q["name_core"].to_list()]
     p_name = [s.replace(" ", "") for s in pool["name_core"].to_list()]
@@ -95,14 +113,22 @@ def block_country(q, pool, k_final):
     n_qi, n_pj = _topk_by_state(Qn, Pn, q_state, p_state, K_NAME)
     a_qi, a_pj = _topk_by_state(Qa, Pa, q_state, p_state, K_ADDR)
     t.append(time.time())
-    pairs = np.unique(np.concatenate([
-        np.stack([n_qi, n_pj], 1), np.stack([a_qi, a_pj], 1)]), axis=0)
+    stacks = [np.stack([n_qi, n_pj], 1), np.stack([a_qi, a_pj], 1)]
+    o_qi = o_pj = np.empty(0, dtype=np.int64)
+    if ours is not None and ours.height:
+        qidx = pl.DataFrame({"s1": q["entity_id"], "qi": np.arange(q.height)})
+        pidx = pl.DataFrame({"cand": pool["entity_id"], "pj": np.arange(pool.height)})
+        oj = ours.join(qidx, on="s1").join(pidx, on="cand")
+        o_qi, o_pj = oj["qi"].to_numpy(), oj["pj"].to_numpy()
+        stacks.append(np.stack([o_qi, o_pj], 1))
+    pairs = np.unique(np.concatenate(stacks), axis=0)
     qi, pj = pairs[:, 0], pairs[:, 1]
-    # Which retriever(s) produced each pair: 1 = name, 2 = address, 3 = both.
+    # Which retriever(s) produced each pair: 1 = name, 2 = address, 3 = both, +4 = the 'patel' blocker.
     width = np.int64(pool.height)
     key = qi.astype(np.int64) * width + pj
     via = (np.isin(key, n_qi.astype(np.int64) * width + n_pj).astype(np.int8)
-           + 2 * np.isin(key, a_qi.astype(np.int64) * width + a_pj).astype(np.int8))
+           + 2 * np.isin(key, a_qi.astype(np.int64) * width + a_pj).astype(np.int8)
+           + 4 * np.isin(key, o_qi.astype(np.int64) * width + o_pj).astype(np.int8))
     name_sim = _rowdot(Qn, Pn, qi, pj)
     addr_sim = _rowdot(Qa, Pa, qi, pj)
     t.append(time.time())
@@ -110,8 +136,18 @@ def block_country(q, pool, k_final):
     cand = pl.DataFrame({
         "s1": q["entity_id"].to_numpy()[qi], "cand": pool["entity_id"].to_numpy()[pj],
         "name_sim": name_sim, "addr_sim": addr_sim, "score": name_sim + addr_sim, "via": via})
-    cand = (cand.with_columns(pl.col("score").rank("ordinal", descending=True).over("s1").alias("rank"))
-                .filter(pl.col("rank") <= k_final))
+    if ours is None:
+        cand = (cand.with_columns(pl.col("score").rank("ordinal", descending=True).over("s1").alias("rank"))
+                    .filter(pl.col("rank") <= k_final))
+    else:
+        # rank_hv = the original Harsh V rank among its own retrievers' pairs (so its top-k_final is reproduced exactly);
+        # rank = rank among the union. Kept: the original top-k_final plus every 'patel' candidate.
+        hv = cand.filter((pl.col("via") & 3) > 0).with_columns(
+            pl.col("score").rank("ordinal", descending=True).over("s1").alias("rank_hv")).select("s1", "cand", "rank_hv")
+        cand = (cand.join(hv, on=["s1", "cand"], how="left")
+                    .with_columns(pl.col("score").rank("ordinal", descending=True).over("s1").alias("rank"))
+                    .filter((pl.col("rank_hv") <= k_final) | ((pl.col("via") & 4) > 0))
+                    .join(ours.select("s1", "cand", "our_rank", "our_rr"), on=["s1", "cand"], how="left"))
     t.append(time.time())
     print(f"   {q.height:,} queries x {pool.height:,} pool -> union {len(qi):,} pairs, kept {cand.height:,} "
           f"| vectorize {t[1] - t[0]:.0f}s, top-k {t[2] - t[1]:.0f}s, pair sims {t[3] - t[2]:.0f}s, "
@@ -127,15 +163,20 @@ def evaluate(n_val):
     for country in val["country"].unique().sort():
         q = val.filter(pl.col("country") == country)
         pool = pl.concat([load("train", 2, country), load("train", 3, country)])
-        cand = block_country(q, pool, k_final=40)
+        cand = block_country(q, pool, k_final=40, ours=load_ours("train", q["entity_id"]))
         saved.append(cand.with_columns(pl.lit(country).alias("country")))
         t = truth.filter(pl.col("s1").is_in(q["entity_id"]))
         hit = t.join(cand, on=["s1", "cand"], how="left")
         n_true = t.height
+        rk = "rank_hv" if "rank_hv" in cand.columns else "rank"
         for k in (1, 2, 3, 5, 8, 10, 15, 20, 30, 40):
-            rec = hit.filter(pl.col("rank") <= k).height / n_true
-            per = cand.filter(pl.col("rank") <= k).height / q.height
+            rec = hit.filter(pl.col(rk) <= k).height / n_true
+            per = cand.filter(pl.col(rk) <= k).height / q.height
             rows.append((country, k, rec, per))
+        if rk == "rank_hv":
+            print(f"   {country}: union (top-40 + patel) recall {hit.filter(pl.col('rank').is_not_null()).height / n_true:.4f}, "
+                  f"{cand.height / q.height:.1f} pairs per S1; patel alone {hit.filter((pl.col('via') & 4) > 0).height / n_true:.4f}",
+                  flush=True)
     df = pl.DataFrame(rows, schema=["country", "K", "recall", "cand_per_s1"], orient="row")
     with pl.Config(tbl_rows=40):
         print(df)
@@ -155,7 +196,8 @@ def run_test(k_final):
             continue
         print(country, flush=True)
         pool = pl.concat([load("test", 2, country), load("test", 3, country)])
-        block_country(s1.filter(pl.col("country") == country), pool, k_final).write_parquet(part)
+        q = s1.filter(pl.col("country") == country)
+        block_country(q, pool, k_final, ours=load_ours("test", q["entity_id"])).write_parquet(part)
     pl.concat([pl.read_parquet(p) for p in parts]).write_parquet(WORK / "test_candidates.parquet")
 
 
@@ -168,7 +210,8 @@ def extra(n_extra):
     for country in ex["country"].unique().sort():
         q = ex.filter(pl.col("country") == country)
         pool = pl.concat([load("train", 2, country), load("train", 3, country)])
-        saved.append(block_country(q, pool, k_final=40).with_columns(pl.lit(country).alias("country")))
+        saved.append(block_country(q, pool, k_final=40, ours=load_ours("train", q["entity_id"]))
+                     .with_columns(pl.lit(country).alias("country")))
     pl.concat(saved).write_parquet(WORK / "extra_candidates.parquet")
     ex.select("entity_id", "country").write_parquet(WORK / "extra_s1.parquet")
 

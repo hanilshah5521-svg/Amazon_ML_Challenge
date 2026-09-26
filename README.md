@@ -4,6 +4,8 @@ For each business in **Source 1**, find every record in **Sources 2 and 3** that
 real-world business. Records have a name, an address and a country (US and India in train; France
 appears only in test). The metric is macro **F0.5** per Source 1 record.
 
+**Branch `patel` (submission 5):** the submission-4 pipeline below, with a second candidate source (`code/patel_blocker/`, S2/S3→S1 IDF blocker with learned substitutions and deep re-rank) merged into the learned cut's input. K is still 8. Held-out weighted F0.5 0.98008 → **0.98415** (India 0.9836, US 0.9848); see [`documentation/submissions/05_patel_candidate_union.md`](documentation/submissions/05_patel_candidate_union.md). Run with `code/business_entity_resolution/src/run_patel.sh`.
+
 **This folder holds the improved pipeline (submission 4, expected ~0.970)**: the 0.967 pipeline (submission 3, kept unchanged in
 `code/business_entity_resolution/src_baseline_0967/`) plus a learned candidate cut (8 per Source 1 record), decoy/noise-word features and 400k
 training records. The history of everything tried is in [`documentation/`](documentation/).

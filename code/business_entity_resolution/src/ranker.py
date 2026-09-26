@@ -27,6 +27,10 @@ FEATS = ["name_sim", "addr_sim", "score", "via", "rank", "c_addr_empty", "q_addr
          "num_shared", "num_n1", "num_n2", "first_num_eq", "name_jac", "addr_jac", "len1", "len2",
          "max_name", "max_addr", "max_score", "gap_name", "gap_addr", "gap_score", "rk_name", "rk_addr", "n_key_equal",
          "n_first_num_eq"]
+# 'patel' union candidates: rank / re-rank score from the S2/S3->S1 blocker (99 / -1 when the pair came only from TF-IDF)
+if os.environ.get("RANKER_EXTRA") == "1":
+    FEATS = FEATS + ["our_rank", "our_rr"]
+OOF_CUT = os.environ.get("OOF_CUT") == "1"   # held-out S1 are cut with out-of-fold ranker scores (no in-sample cut)
 
 
 def tables(split, country):
@@ -64,6 +68,8 @@ def cheap_features(cand, s1n, pool):
         (pl.col("name_sim") - pl.col("max_name")).alias("gap_name"), (pl.col("addr_sim") - pl.col("max_addr")).alias("gap_addr"),
         (pl.col("score") - pl.col("max_score")).alias("gap_score"), pl.col("rank").cast(F32),
         pl.col("key_equal").sum().over("s1").alias("n_key_equal"), pl.col("first_num_eq").sum().over("s1").alias("n_first_num_eq"))
+    if "our_rank" in FEATS:
+        df = df.with_columns(pl.col("our_rank").fill_null(99.0).cast(F32), pl.col("our_rr").fill_null(-1.0).cast(F32))
     return df.select("s1", "cand", *FEATS)
 
 
@@ -109,6 +115,7 @@ def fit():
     for tr, te in GroupKFold(5).split(X, y, g):
         oofp[te] = lgb.train(PARAMS, lgb.Dataset(X[tr], y[tr]), ROUNDS).predict(X[te])
     df = df.with_columns(pl.Series("p_rank", oofp))
+    df.select("s1", "cand", "p_rank").write_parquet(V2 / "ranker_oof.parquet")
     recall_table(df, n_true, "OOF")
     lgb.train(PARAMS, lgb.Dataset(X, y), ROUNDS).save_model(str(V2 / "ranker.txt"))
     print("saved ranker", flush=True)
@@ -117,16 +124,21 @@ def fit():
 def cut(split, k):
     m = lgb.Booster(model_file=str(V2 / "ranker.txt"))
 
-    def one(cand):
+    def one(cand, oof=None):
         df = features_all(cand, split)
         p = m.predict(df.select(FEATS).to_numpy()).astype(np.float32)
-        df = df.with_columns(pl.Series("p_rank", p)).with_columns(
+        df = df.with_columns(pl.Series("p_rank", p))
+        if oof is not None:   # held-out S1: out-of-fold ranker scores, so the cut never saw these S1's labels
+            df = df.drop("p_rank").join(oof, on=["s1", "cand"], how="left")
+            assert df["p_rank"].null_count() == 0, "OOF ranker scores missing for some val candidates"
+        df = df.with_columns(
             pl.col("p_rank").rank("ordinal", descending=True).over("s1").alias("new_rank")).filter(pl.col("new_rank") <= k)
         return cand.join(df.select("s1", "cand", "new_rank"), on=["s1", "cand"]).with_columns(
             pl.col("new_rank").alias("rank")).drop("new_rank")
 
     if split == "train":
-        one(pl.read_parquet(WORK / "val_candidates.parquet")).write_parquet(WORK / f"val_candidates_cut{SUF}.parquet")
+        oof = pl.read_parquet(V2 / "ranker_oof.parquet") if OOF_CUT else None
+        one(pl.read_parquet(WORK / "val_candidates.parquet"), oof).write_parquet(WORK / f"val_candidates_cut{SUF}.parquet")
         if (WORK / "extra_candidates.parquet").exists():
             one(pl.read_parquet(WORK / "extra_candidates.parquet")).write_parquet(WORK / f"extra_candidates_cut{SUF}.parquet")
     else:
