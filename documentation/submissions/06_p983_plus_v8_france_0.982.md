@@ -29,3 +29,17 @@
 
 - Our France scores are over-confident even after the region fill. Pairs that only our model accepts should not be added to a stronger file.
 - Not uploaded: `output/v9_p983_plus_v8fr` (all 34,301 house-consistent pairs). It would most likely lose more.
+
+## Reproduce (all commands in `code/business_entity_resolution/src/`, with `WORK_DIR` set to one work folder)
+
+1. **Upstream:** follow submission 4 (`run_final.sh`: normalize, blocking, learned cut) to get the `test_s*_norm.parquet` files and the cut test candidates.
+2. **Training candidates:** `extra_all.py 8 200000`. **Test candidates:** `cut_test_chunked.py`. **Tables:** `word_lists.py`, `legal_transitions.py`.
+3. **France region fill:** `fr_region_fill.py`, **before** exporting test features. It rewrites the French rows of `test_s2/s3_norm.parquet` and keeps `*.pre_frfill.parquet`.
+4. **Export features:** `export_features.py train` and `export_features.py test` (`MODEL_K=8`, `FEAT_WORKERS=8`).
+5. **Upload the features to Kaggle:** run `kaggle_upload.py train` and `kaggle_upload.py test`, which create private datasets `<user>/amlc26-feat-train` and `<user>/amlc26-feat-test`. On a different Kaggle account, change `hanilshah` to that account's name in `kaggle/kernel-metadata.json` (`id`, `dataset_sources`).
+6. **Train on Kaggle GPU:** run `kaggle/amlc26_train.ipynb`, about 75 min on a P100, with defaults `MODELS=xgb`, `FOLDS=4`, `T6=1`. It writes `test_scores.parquet`, `val_oof.parquet`, `config.json` and `models/`.
+7. **Build v8:** `FINAL_OUT=<out>/v8_kaggle_s2_frfill python finalize_kaggle.py <kaggle out> s2_xgb`.
+8. **Build this submission:** `FINAL_OUT=<out>/v10_p983_plus_v8fr_filled python add_fr_pairs.py "<Patel's 0.983 matching_results.tsv>" <out>/v8_kaggle_s2_frfill <kaggle out> filled_only`.
+   - The base file comes from branch `patel` (submission v10) or `Main_Submissions/`; it is not in git.
+
+The competition data and work folders are not in git; the steps need `student_resource/dataset/` in the repo root. Re-runs match to 5 decimals on half B (stage 1 and stage 2 matched the earlier Kaggle run).
