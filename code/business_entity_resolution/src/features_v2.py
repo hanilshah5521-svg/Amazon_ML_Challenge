@@ -35,9 +35,22 @@ SEP = re.compile(r"\s*([-/])\s*")
 STREET_WORDS = set(ADDR_COMMON.values()) | {"rue", "no", "fl", "col", "ngr"}
 PY_FEATURES = ["ent_added", "ent_dropped", "ent_changed", "private_diff", "legal_equal",
                "cnum_exact", "cnum_subset", "cnum_shared", "cnum_n1", "cnum_n2", "cnum_part_changed",
-               "cnum_trunc", "cnum_close", "cnum_range_in", "first_num_logdiff",
+               "cnum_trunc", "cnum_close", "cnum_range_in", "first_num_logdiff", "cnum_off_4_20", "cnum_unrelated",
                "first_tok_equal", "invented_name", "acronym", "web_name", "web_contains", "place_in_name",
-               "decoy_added", "noise_added", "decoy_dropped", "n_decoy_added"]
+               "decoy_added", "noise_added", "decoy_dropped", "n_decoy_added",
+               # generator patterns (pattern_miner.py): legal swaps never seen in true pairs, true-only evidence
+               "legal_trans_logcount", "legal_trans_unseen", "alias_marker", "tokens_identical", "reordered_only",
+               "addr_parts_reordered"]
+ALIAS_RE = re.compile(r"(?<![a-z])(?:f */? *k */? *a|formerly|d */? *b */? *a|doing business as|a */ *k */ *a)(?![a-z])", re.I)
+LEGAL_TRANS_PATH = WORK / os.environ.get("V2_NAME", "v2") / "legal_transitions.json"
+_LT = {}
+
+
+def _legal_table(country):
+    """Counts of legal-type transitions in all training TRUE pairs (legal_transitions.py)."""
+    if not _LT and LEGAL_TRANS_PATH.exists():
+        _LT.update(json.loads(LEGAL_TRANS_PATH.read_text(encoding="utf-8")))
+    return _LT.get(country, _LT.get("US", {}))
 # Per-country generic words that the noise ADDS to a name: "decoy" words (partners/holdings/group...) mark a different
 # business (house numbers disagree), "noise" words (center/services...) leave the same business. Learned without labels
 # by word_lists.py from candidate pairs; missing file = no lists (features are 0).
@@ -62,10 +75,10 @@ def _nums(raw):
 def _num_feats(a1, a2):
     x, y = _nums(a1), _nums(a2)
     if not x or not y:
-        return [0, 0, 0, len(x), len(y), 0, 0, 0, 0, -1]
+        return [0, 0, 0, len(x), len(y), 0, 0, 0, 0, -1, 0, 0]
     exact, subset = float(x == y), float(x <= y or y <= x)
     shared = len(x & y)
-    part = trunc = close = rng = 0
+    part = trunc = close = rng = off420 = unrel = 0
     for a in x - y:
         pa = a.split("-")
         for b in y - x:
@@ -75,8 +88,13 @@ def _num_feats(a1, a2):
             if len(pa) == len(pb) == 1:
                 if a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a):
                     trunc = 1
-                if abs(int(a) - int(b)) <= 3:
+                d = abs(int(a) - int(b))
+                if d <= 3:
                     close = 1
+                elif d <= 20:
+                    off420 = 1
+                elif not (a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a)):
+                    unrel = 1
             if len(pa) == 2 and len(pb) == 1 and int(pa[0]) <= int(b) <= int(pa[1]):
                 rng = 1
             if len(pb) == 2 and len(pa) == 1 and int(pb[0]) <= int(a) <= int(pb[1]):
@@ -84,10 +102,11 @@ def _num_feats(a1, a2):
     f1 = next((int(n) for n in (v.split("-")[0] for v in sorted(x, key=len)) if n), None)
     f2 = next((int(n) for n in (v.split("-")[0] for v in sorted(y, key=len)) if n), None)
     fd = math.log1p(abs(f1 - f2)) if f1 is not None and f2 is not None else -1
-    return [exact, subset, shared, len(x), len(y), part, trunc, close, rng, fd]
+    return [exact, subset, shared, len(x), len(y), part, trunc, close, rng, fd, off420, unrel]
 
 
-def _rows(chunk, decoy=frozenset(), noise=frozenset()):
+def _rows(chunk, decoy=frozenset(), noise=frozenset(), legal_table=None):
+    legal_table = legal_table or {}
     out = []
     for n1, n2, c1, c2, a1, a2, r2, addr1 in chunk:
         e1 = {ENT[t] for t in n1.split() if t in ENT}
@@ -112,7 +131,15 @@ def _rows(chunk, decoy=frozenset(), noise=frozenset()):
         web_contains = float(len(t2) == 1 and len(d1) >= 2 and all(t in ns2 for t in d1))
         at = set(addr1.split())
         place = float(sum(t in at for t in d1)) / max(len(d1), 1)
-        out.append(legal + _num_feats(a1, a2) + [first, invented, acro, web, web_contains, place] + extra)
+        key = f"{'|'.join(sorted(e1))}>{'|'.join(sorted(e2))}"
+        cnt = legal_table.get(key, 0)
+        trans = [math.log1p(cnt), float(e1 != e2 and cnt == 0)]
+        p1 = [q.strip().lower() for q in a1.split(",") if q.strip()]
+        p2 = [q.strip().lower() for q in a2.split(",") if q.strip()]
+        f1, f2 = n1.split(), n2.split()          # full normalized names (legal words included)
+        true_only = [float(bool(ALIAS_RE.search(r2))), float(f1 == f2), float(f1 != f2 and sorted(f1) == sorted(f2)),
+                     float(p1 != p2 and sorted(p1) == sorted(p2))]
+        out.append(legal + _num_feats(a1, a2) + [first, invented, acro, web, web_contains, place] + extra + trans + true_only)
     return out
 
 
@@ -174,7 +201,7 @@ def country_features(cand, split, country, pool_workers=int(os.environ.get("FEAT
     chunks = [rows[i:i + 50_000] for i in range(0, len(rows), 50_000)]
     with Pool(pool_workers) as p:
         decoy, noise = _word_lists(country)
-        res = [r for part in p.map(partial(_rows, decoy=decoy, noise=noise), chunks) for r in part]
+        res = [r for part in p.map(partial(_rows, decoy=decoy, noise=noise, legal_table=_legal_table(country)), chunks) for r in part]
     del rows, chunks
     df = df.with_columns([pl.Series(n, [r[i] for r in res], dtype=pl.Float32) for i, n in enumerate(PY_FEATURES)])
     del res
@@ -211,6 +238,10 @@ def country_features(cand, split, country, pool_workers=int(os.environ.get("FEAT
     # group features without a model: same-name candidates and which one has the best address
     df = df.with_columns(
         (pl.col("key_equal") == 1).sum().over("s1").cast(pl.Float32).alias("grp_same_key"),
+        pl.col("cnum_exact").max().over("s1").alias("grp_any_num_exact"),
+        ((pl.col("cnum_exact").max().over("s1") == 1) & (pl.col("cnum_exact") == 0) &
+         ((pl.col("cnum_close") + pl.col("cnum_off_4_20") + pl.col("cnum_part_changed")) > 0)).cast(pl.Float32).alias("num_shift_vs_sibling"),
+        pl.col("legal_equal").max().over("s1").alias("grp_any_legal_equal"),
         pl.col("addr_sim").max().over("s1").alias("grp_max_addr"),
         pl.len().over("s1").cast(pl.Float32).alias("grp_n"),
         (pl.col("cand").str.slice(0, 2) == "S2").cast(pl.Float32).alias("is_s2"))
@@ -224,4 +255,5 @@ def country_features(cand, split, country, pool_workers=int(os.environ.get("FEAT
 
 NEW_FEATURES = PY_FEATURES + [f"{p}_{k}_{m}" for p in ("nm", "ad") for k in ("shared", "un1", "un2") for m in ("idf", "max")] + \
     ["gen_un1", "gen_un2", "state_rel", "s1_key_n", "pool_key_n1", "pool_key_n2", "s1_addr_n", "pool_addr_n",
-     "grp_same_key", "grp_max_addr", "grp_n", "is_s2", "best_addr_among_namesakes", "addr_gap_to_best"]
+     "grp_same_key", "grp_max_addr", "grp_n", "is_s2", "best_addr_among_namesakes", "addr_gap_to_best",
+     "grp_any_num_exact", "num_shift_vs_sibling", "grp_any_legal_equal"]
