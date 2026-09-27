@@ -240,3 +240,61 @@ data: −0.0002 India, −0.0000 US.
   - The "not in top-K" loss fell from 0.0088 / 0.0060 to 0.0031 / 0.0023.
   - US false accepts rose from 0.0022 to 0.0027.
 - **Kept.** Details are in `submissions/05_patel_candidate_union.md`, and the forensic analysis behind the change is in `patel_forensics_and_plan.md`.
+
+## 11. Submission 6 round (27 Sep, branch `patel`): EXP-2, generator-pattern features
+
+- **Change:** EXP-1 plus the 0.976-Hanil matcher features (`features_v2_pattern.py`: 11 generator-pattern features and the FR→US legal-form map; 85 P1 features instead of 74).
+  - Candidates, cut and word lists are reused byte-for-byte from EXP-1, so only the feature set changes.
+  - `legal_transitions.py` builds its table without the 200k held-out S1 (6.95M pairs).
+  - Run: `src/run_exp2.sh`, 32 min.
+- **Half B (EXP-1 → EXP-2):**
+  - India 0.98358 → **0.98423**; US 0.98484 → **0.98541**; weighted **+0.00061**.
+  - Leak-free 50k subset: **+0.00073**.
+  - US FP 756 → 624, precision 0.9962 → 0.9969. India FN 5,769 → 5,586, FP 594 → 606.
+- **Kept.** It passes all criteria: weighted ≥ +0.0005, no country below −0.0005, and total FP down.
+- **Test matches:** France 868,000 (EXP-1 865,515), India 2,701,670 (2,699,835), US 2,247,914 (2,253,736).
+- **Submission:** `output/v3_lgbm_two_stage/`. This is the local EXP-2 output, not the 9.5 v3.
+  - matching SHA-256 prefix 033b1b3d70ccf7c9, validator PASS (--check-ids).
+  - 1,732,544 rows, 98,051 empty.
+
+## 12. Fusion with the 0.9796 file (27 Sep). CORRECTED: the file analysed first was S10 (0.9786); v4/v5 withdrawn, use `output/v6_e2_s9france`
+- The 0.9796 file = EXP-1 with 30,364 French pairs removed.
+- Removed patterns (French decoys, 5–17× over-represented vs train): name + extra word at a different house number, and acronyms at the same address.
+- `output/v4_fusion_e2_h9796fr` = EXP-2 India/US + 0.9796 France.
+- `output/v5_fusion_fr_noacronym` = v4 minus the remaining French acronym accepts.
+- Analysis: `../../experiments/FUSION/REPORT.md`.
+
+## 13. EXP-3: owner-competition features (27 Sep, 15:12–15:58)
+- **Change:** EXP-2 + 6 `oc_*` features from the patel S2/S3→S1 blocker's owner lists over all S1 (`owner_competition.py`, `run_exp3.sh`).
+- **Half B:** India 0.98423 → **0.98750**, US 0.98541 → **0.98709**.
+  - Leak-free subset: +0.00247.
+  - FN −998 / −1,125; FP −188 / −2.
+- **Orphan stress** (`stress_exp3.py`; hide h of train S1 from the owner lists):
+  - The gain shrinks with h: +0.0022 / +0.0012 at 10%, +0.0015 / +0.0007 at 20%.
+  - US turns −0.0003 at 30%.
+- **Kept.**
+- **Submission:** `output/v8_e3_s9france` = EXP-3 India/US (`output/v7_lgbm_two_stage`) + S9 France.
+  - SHA cdb3326c5540f0b7; validator PASS.
+
+## 14. EXP-5: leak fixes + edit / word / number / rare-name features (27 Sep, 16:48–17:52)
+- **Leak fixes:**
+  - deterministic first house number (hash-order bug in `first_num_logdiff`)
+  - legal-transition table built without any of the 400k training S1
+  - naive-Bayes and word scores for held-out S1 learned from the other 200k S1 only, 5-fold OOF within those
+- **New features** (`exp5_features.py`, 65): 52 edit flags (pattern_miner), `nb_llr`, added/dropped word scores, premise-number / number-edit type / "number changed + same name / legal changed", rarest candidate word, handle overlap.
+- **Half B (EXP-3 → EXP-5):**
+  - India 0.98750 → **0.98845**, US 0.98709 → **0.98800**; weighted **+0.00093**, leak-free **+0.00101**.
+  - FP 418 → 366 / 622 → 480; FN 4,588 → 4,368 / 6,638 → 6,482.
+- **Kept.**
+- **Submission:** `output/v10_e5_s9france` = EXP-5 India/US (`output/v9_lgbm_two_stage`) + S9 France.
+  - SHA 8fc3d0ce211e5f84; validator PASS.
+- **Dropped:** the character cross-encoder trained from scratch (loss 0.456 after about 1 fold vs 0.54 for the constant guess; 10 GB).
+- **EXP-5 orphan stress** (`15_exp5_orphan_stress.txt`), vs EXP-2 at h = 0 / 10 / 20 / 30%:
+  - India +0.0040 / +0.0035 / +0.0029 / +0.0020.
+  - US +0.0025 / +0.0021 / +0.0018 / +0.0010.
+  - Positive at every level. EXP-3 was −0.0003 in US at 30%.
+- **Whole-state holdout** (`16_state_holdout.txt`; 20% of states per country held out, stage 1). EXP-2 → EXP-3 → EXP-5:
+  - India 0.98216 → 0.98622 → 0.98765.
+  - US 0.98418 → 0.98631 → 0.98756.
+- **Recommended final submission:** `output/v10_e5_s9france`.
+- **Leaderboard: v10 = 0.983** (27 Sep, ~18:10). Ladder: 0.977 (EXP-1) → 0.9796 (S9) → 0.9786 (S10) → **0.983 (v10)**.

@@ -24,8 +24,17 @@ from sklearn.model_selection import GroupKFold
 
 from common import DATA, ROOT, WORK, read_pairs, read_source
 from evaluation import decide, f05_macro, new_output_dir, write_tsv
-from features_v2 import NEW_FEATURES, country_features
+if os.environ.get("PATTERN_FEATS") == "1":    # EXP-2: + 0.976-Hanil generator-pattern features and FR legal map
+    from features_v2_pattern import NEW_FEATURES, country_features
+else:
+    from features_v2 import NEW_FEATURES, country_features
 from lgbm_matcher import FEATURES as BASE_FEATURES
+OWNER = os.environ.get("OWNER_FEATS") == "1"        # EXP-3: + owner-competition features (owner_competition.py)
+if OWNER:
+    from owner_competition import OC_FEATURES, add_oc
+X5 = os.environ.get("X5_FEATS") == "1"              # EXP-5: + edit flags / naive Bayes / word scores / number alignment (exp5_features.py)
+if X5:
+    from exp5_features import add_x5, x5_features
 
 V2 = WORK / os.environ.get("V2_NAME", "v2")
 V2.mkdir(exist_ok=True)
@@ -33,7 +42,7 @@ MODEL_K = int(os.environ.get("MODEL_K", 15))
 VAL_CAND = os.environ.get("VAL_CAND", "val_candidates.parquet")           # learned-cut files replace the raw top-K
 TEST_CAND = os.environ.get("TEST_CAND", "test_candidates_{country}.parquet")
 EXTRA_CAND = os.environ.get("EXTRA_CAND")                                    # e.g. extra_candidates_cut.parquet
-P1 = BASE_FEATURES + NEW_FEATURES
+P1 = BASE_FEATURES + NEW_FEATURES + (OC_FEATURES if OWNER else []) + (sorted(x5_features()) if X5 else [])
 S2_FEATURES = ["p1", "p1_rank", "p1_max", "p1_second", "p1_gap", "n_p1_05", "n_p1_08", "src_strong", "p1_sum",
                "top_cnum_subset", "top_addr_empty", "top_ent_changed", "dev_legal", "dev_num", "dev_key"]
 P2 = P1 + S2_FEATURES
@@ -184,6 +193,10 @@ def train():
         df = features_chunked(cand, "train").join(truth.with_columns(pl.lit(1).alias("y")), on=["s1", "cand"], how="left") \
                .with_columns(pl.col("y").fill_null(0))
         df.write_parquet(feat_path)
+    if OWNER:
+        df = add_oc(df, "train")
+    if X5:
+        df = add_x5(df, "train")
     print(f"training pairs: {df.height:,} from {df['s1'].n_unique():,} S1; positives {int(df['y'].sum()):,}", flush=True)
     ids = {c: val.filter(pl.col("country") == c)["entity_id"].to_list() for c in sorted(val["country"].unique().to_list())}
     rng = np.random.default_rng(0)
@@ -231,6 +244,10 @@ def predict():
         cand = (pl.read_parquet(WORK / TEST_CAND.format(country=country)).filter(pl.col("rank") <= MODEL_K)
                   .with_columns(pl.lit(country).alias("country")))
         def score_chunk(f):          # score each S1 chunk immediately, keep only what decisions need
+            if OWNER:
+                f = add_oc(f, "test")
+            if X5:
+                f = add_x5(f, "test")
             f = f.with_columns(pl.Series("p1", m1.predict(f.select(P1).to_numpy()).astype(np.float32)))
             if m2 is not None:
                 f = stage2_features(f)
