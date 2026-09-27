@@ -46,11 +46,35 @@ LEGAL_TRANS_PATH = WORK / os.environ.get("V2_NAME", "v2") / "legal_transitions.j
 _LT = {}
 
 
+# France has no labels, so its transitions are looked up in the US table after mapping each French form to a US form
+# that behaves the same way there: drop/add/same are common in true pairs, swaps between the four targets never occur.
+# Without this, every true French pair that drops "sarl" (~20% of France rank-1/2 candidates) looked like a legal swap.
+# ets/ste ("etablissements"/"societe") are name prefixes, not legal types: ignored in the lookup key.
+FR_LEGAL = {"sarl": "llc", "eurl": "llc", "sas": "inc", "sasu": "inc", "sa": "corp", "sci": "limited",
+            "ei": "lp", "snc": "lp", "ets": None, "ste": None}
+
+
+def _to_us_key(key):
+    sides = []
+    for side in key.split(">"):
+        forms = {FR_LEGAL.get(f, f) for f in side.split("|") if f}
+        sides.append("|".join(sorted(f for f in forms if f)))
+    return ">".join(sides)
+
+
+class _MappedTable(dict):
+    """US transition counts looked up with French legal forms mapped to their US analogues."""
+    def get(self, key, default=None):
+        return dict.get(self, _to_us_key(key), default)
+
+
 def _legal_table(country):
     """Counts of legal-type transitions in all training TRUE pairs (legal_transitions.py)."""
     if not _LT and LEGAL_TRANS_PATH.exists():
         _LT.update(json.loads(LEGAL_TRANS_PATH.read_text(encoding="utf-8")))
-    return _LT.get(country, _LT.get("US", {}))
+    if country in _LT:
+        return _LT[country]
+    return _MappedTable(_LT.get("US", {}))
 # Per-country generic words that the noise ADDS to a name: "decoy" words (partners/holdings/group...) mark a different
 # business (house numbers disagree), "noise" words (center/services...) leave the same business. Learned without labels
 # by word_lists.py from candidate pairs; missing file = no lists (features are 0).

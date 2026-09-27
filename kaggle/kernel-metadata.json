@@ -1,0 +1,16 @@
+{
+ "id": "hanilshah/amlc26-train",
+ "title": "amlc26 train",
+ "code_file": "amlc26_train.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": false,
+ "dataset_sources": [
+  "hanilshah/amlc26-feat-train",
+  "hanilshah/amlc26-feat-test"
+ ],
+ "competition_sources": [],
+ "kernel_sources": []
+}
