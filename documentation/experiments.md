@@ -320,3 +320,4 @@ data: −0.0002 India, −0.0000 US.
   - `output/v16_e7_teamIU_e5fr`: France from v14. SHA 282bec37c521c1be.
   - `output/v17_e7_teamIU_s9fr`: S9 France. SHA d414527971d56b00.
   - Choose by v14's LB score.
+- **Leaderboard: v17 = 0.985** (27 Sep, ~20:00). Ladder: 0.977 (EXP-1) → 0.9796 (S9) → 0.983 (v10, EXP-5) → **0.985 (v17: EXP-7 + team India/US rule + S9 France)**.

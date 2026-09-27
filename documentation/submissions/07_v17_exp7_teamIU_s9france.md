@@ -1,4 +1,4 @@
-# Submission v17: EXP-7 India/US − team India/US rule + S9 France (27 Sep 2026)
+# Submission v17: EXP-7 India/US − team India/US rule + S9 France (27 Sep 2026). **LB 0.985**
 
 **Files:** `output/v17_e7_teamIU_s9fr/{matching_results,candidate_pairs}.tsv`
 - matching_results SHA-256 prefix d414527971d56b00; validator PASS (--check-ids).
@@ -22,7 +22,7 @@
 
 **Why S9 France and not EXP-5 France (v14 / v16).** Branch `Hanil`, submission 6: v10 + 10,531 French pairs accepted only by a newer model (house-number consistent) → LB 0.983 → **0.982**. v14 / v16 add 24,130 such pairs, so they would most likely lose.
 
-**Expected LB ≈ 0.984–0.985** (not measured yet).
+**LB 0.985** (expected 0.984–0.985).
 
 **Reproduce:** submission v10 steps, then
 ```bash
