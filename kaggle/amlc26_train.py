@@ -31,9 +31,10 @@ def log(*a):
 
 SMOKE = int(os.environ.get("SMOKE", 0))            # local code check: few parts, few rounds
 GPU = os.environ.get("GPU", "1") == "1"
-MODELS = os.environ.get("MODELS", "xgb,cat").split(",")
+MODELS = os.environ.get("MODELS", "xgb").split(",")   # v8: XGB only (CatBoost / ensemble gave no half-B gain in v6)
 FOLDS = int(os.environ.get("FOLDS", 4))
-ABLATE_CAND = os.environ.get("ABLATE_CAND", "1") == "1"   # extra XGB stage 2 without owner-competition features
+ABLATE_CAND = os.environ.get("ABLATE_CAND", "0") == "1"   # extra XGB stage 2 without owner-competition features
+T6 = os.environ.get("T6", "1") == "1"   # extra XGB stage 2 whose TRAIN owner features hide 20% of competing S1 (test density)
 K = 8
 OUT = os.environ.get("OUT", "/kaggle/working")
 os.makedirs(OUT, exist_ok=True)
@@ -126,8 +127,12 @@ def predict_chunks(fn, X, rows, ncols, chunk=2_000_000):
     take = (lambda s: X[s:s + chunk, :ncols]) if rows is None else (lambda s: X[rows[s:s + chunk], :ncols])
     return np.concatenate([fn(np.ascontiguousarray(take(s))) for s in range(0, n, chunk)]).astype(np.float32)
 
-def fit_predict(model, ncols, trn, es, targets):
-    """Fit on rows trn using the first ncols feature columns (early stopping on es); predict each (X, rows) target."""
+MODEL_DIR = os.path.join(OUT, "models")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+def fit_predict(model, ncols, trn, es, targets, save=None):
+    """Fit on rows trn using the first ncols feature columns (early stopping on es); predict each (X, rows) target.
+    save: file stem under OUT/models/ (every fold model is kept, so later blends need no retraining)."""
     if model == "xgb":
         dtr = xgb.QuantileDMatrix(tr_X[trn, :ncols], y[trn])
         des = xgb.QuantileDMatrix(tr_X[es, :ncols], y[es], ref=dtr)
@@ -136,12 +141,16 @@ def fit_predict(model, ncols, trn, es, targets):
         it = (0, b.best_iteration + 1)
         fn = lambda A: b.inplace_predict(A, iteration_range=it)
         best = b.best_iteration
+        if save:
+            b.save_model(os.path.join(MODEL_DIR, f"{save}.json"))
     else:
         ptr = Pool(tr_X[trn, :ncols], y[trn]); pes = Pool(tr_X[es, :ncols], y[es])
         m = CatBoostClassifier(**{**CAT, "iterations": ROUNDS}).fit(ptr, eval_set=pes, use_best_model=True)
         del ptr, pes; gc.collect()
         fn = lambda A: m.predict_proba(A)[:, 1]
         best = m.get_best_iteration()
+        if save:
+            m.save_model(os.path.join(MODEL_DIR, f"{save}.cbm"))
     out = [predict_chunks(fn, X, rows, ncols) for X, rows in targets]
     return out, best
 
@@ -153,7 +162,8 @@ def run_stage(ncols, models, tag):
         hold = fold == f
         trn, es = np.flatnonzero(~hold & ~es_mask), np.flatnonzero(~hold & es_mask)
         for m in models:
-            (p_hold, p_test), best = fit_predict(m, ncols, trn, es, [(tr_X, np.flatnonzero(hold)), (te_X, None)])
+            (p_hold, p_test), best = fit_predict(m, ncols, trn, es, [(tr_X, np.flatnonzero(hold)), (te_X, None)],
+                                                 save=f"{tag}_{m}_fold{f}")
             oof[m][hold] = p_hold
             tst[m] += p_test / FOLDS
             log(f"{tag} fold {f} {m}: best iteration {best}")
@@ -208,6 +218,22 @@ def cand_features(df):
 def fill_stage2(X, df, p1):
     df = cand_features(stage2_features(df.with_columns(pl.Series("p1", p1))))
     X[:, N1:N3] = df.select([pl.col(c).cast(pl.Float32) for c in S2_FEATURES + CAND_FEATURES]).to_numpy()
+
+def fill_owner_t6(X, df, p1, hide_share_groups=5):
+    """T6: recompute ONLY the owner-competition columns of the TRAIN matrix with ~20% of competing S1 hidden.
+    Test has ~2.4 unowned S2/S3 per S1 vs 1.22 in train (many owners are absent), so on test a lookalike often has no
+    competing claimant. S1 are split into 5 hash groups; rows of group k get their features computed with group k+1
+    hidden, so every row sees 80% of the other S1 (1.22 + 3.66 * 0.2 ~ 2 unowned per S1). Row order is preserved."""
+    base = stage2_features(df.with_columns(pl.Series("p1", p1))).with_row_index("_i") \
+             .with_columns((pl.col("s1").hash(seed=37) % hide_share_groups).alias("_g"))
+    parts = []
+    for k in range(hide_share_groups):
+        visible = base.filter(pl.col("_g") != (k + 1) % hide_share_groups)
+        parts.append(cand_features(visible).filter(pl.col("_g") == k).select(["_i"] + CAND_FEATURES))
+        del visible; gc.collect()
+    res = pl.concat(parts).sort("_i")
+    assert res.height == len(X), (res.height, len(X))
+    X[:, N2:N3] = res.select([pl.col(c).cast(pl.Float32) for c in CAND_FEATURES]).to_numpy()
 
 # %%
 def f05_macro(pred, truth, s1_ids):
@@ -281,6 +307,12 @@ oof2, tst2 = run_stage(N3, MODELS, "stage2")
 for m, p in oof2.items():
     report[f"s2_{m}"] = evaluate(p); log(f"stage 2 {m}:", json.dumps(report[f"s2_{m}"]))
     val_cols[f"s2_{m}"], test_cols[f"s2_{m}"] = p[vmask], tst2[m]
+if T6 and "xgb" in MODELS:                          # T6: same XGB stage 2, train owner features under test-like density
+    fill_owner_t6(tr_X, tr, oof1["ens"])               # test matrix keeps the real (full) owner features
+    log("T6 owner features filled for train")
+    oof2t, tst2t = run_stage(N3, ["xgb"], "stage2-t6")
+    report["s2t6_xgb"] = evaluate(oof2t["xgb"]); log("stage 2 xgb T6:", json.dumps(report["s2t6_xgb"]))
+    val_cols["s2t6_xgb"], test_cols["s2t6_xgb"] = oof2t["xgb"][vmask], tst2t["xgb"]
 if ABLATE_CAND and "xgb" in MODELS:                  # does owner competition help? same XGB stage 2 without it
     oof2b, tst2b = run_stage(N2, ["xgb"], "stage2-no-owner")
     report["s2nc_xgb"] = evaluate(oof2b["xgb"]); log("stage 2 xgb WITHOUT owner competition:", json.dumps(report["s2nc_xgb"]))

@@ -42,7 +42,7 @@ def main():
         truth = read_pairs().rename({"m": "cand"}).with_columns(pl.lit(1, dtype=pl.Int8).alias("y"))
         export(cand, "train", WORK / "feat_train", truth, val["entity_id"])
     else:
-        for country in ("France", "India", "US"):
+        for country in (sys.argv[2:] or ("France", "India", "US")):     # e.g. `test France` re-exports one country
             cand = (pl.read_parquet(WORK / f"test_candidates_cut_{country}.parquet").filter(pl.col("rank") <= MODEL_K)
                       .with_columns(pl.lit(country).alias("country")))
             export(cand, "test", WORK / f"feat_test_{country}")
