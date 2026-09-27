@@ -160,7 +160,7 @@ def handle_overlap(keys, split):
 
 
 def main(split):
-    df, df_min = doc_freq(split)
+    df, df_min = doc_freq("train" if split == "extra2" else split)
     if split == "train":
         tr = (pl.concat([pl.read_parquet(WORK / f, columns=["s1", "cand", "rank"]) for f in ("val_candidates_cut.parquet", "extra_candidates_cut.parquet")])
                 .filter(pl.col("rank") <= 8).join(read_pairs().rename({"m": "cand"}).with_columns(pl.lit(1).alias("y")), on=["s1", "cand"], how="left")
@@ -190,12 +190,16 @@ def main(split):
         import pickle
         vocab = (WORK / "x5_vocab.txt").read_text().split("\n")
         stats_all = pickle.loads((WORK / "x5_stats.pkl").read_bytes())
-        allp = pl.concat([pl.read_parquet(WORK / f"test_candidates_cut_{c}.parquet", columns=["s1", "cand", "rank"])
-                          .filter(pl.col("rank") <= 8) for c in ("France", "India", "US")])
+        if split == "extra2":         # EXP-7: new training S1 get label statistics of the ORIGINAL 400k (never their own), like test
+            allp = pl.read_parquet(WORK / "extra2_candidates_cut.parquet", columns=["s1", "cand", "rank"]).filter(pl.col("rank") <= 8)
+        else:
+            allp = pl.concat([pl.read_parquet(WORK / f"test_candidates_cut_{c}.parquet", columns=["s1", "cand", "rank"])
+                              .filter(pl.col("rank") <= 8) for c in ("France", "India", "US")])
+        data = "train" if split == "extra2" else "test"
         parts = []
         for i in range(0, allp.height, 2_000_000):          # chunks: per-pair Python sets are ~3 GB per million pairs
-            keys, out = compute_raw(allp.slice(i, 2_000_000), "test")
-            parts.append(handle_overlap(features(keys, out, [stats_all] * len(out), df, df_min, vocab), "test"))
+            keys, out = compute_raw(allp.slice(i, 2_000_000), data)
+            parts.append(handle_overlap(features(keys, out, [stats_all] * len(out), df, df_min, vocab), data))
             del keys, out
             print(f"   test pairs {min(i + 2_000_000, allp.height):,}/{allp.height:,}", flush=True)
         f = pl.concat(parts)

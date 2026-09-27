@@ -298,3 +298,25 @@ data: −0.0002 India, −0.0000 US.
   - US 0.98418 → 0.98631 → 0.98756.
 - **Recommended final submission:** `output/v10_e5_s9france`.
 - **Leaderboard: v10 = 0.983** (27 Sep, ~18:10). Ladder: 0.977 (EXP-1) → 0.9796 (S9) → 0.9786 (S10) → **0.983 (v10)**.
+
+## 15. Team file 0.9822 and v12 (27 Sep, 18:25)
+- **The team's 0.9822 file** = the 0.977 file (EXP-1) minus the S9 France removals (identical France) minus **15,397 India / 30,213 US pairs**.
+  - The US removals are mostly "same name, different house number" (23,591 with differing first numbers).
+  - France is identical to S9, so its +0.0026 over S9 comes only from the India/US removals: test India/US hold number-changed near-duplicates that train does not.
+- **EXP-5 already rejects** 21,416 of those 45,610 pairs, and **still accepts 24,194** (India 8,048, US 16,146).
+- **v12** = v10 minus those 24,194 pairs (`output/v12_v10_minus_teamIUrule`, SHA 5d9fd557f6cf855d, validator PASS).
+- **Package note:** the removal list comes from the team file, so its code or rule must be in the package.
+- **EXP-7 started** (18:31): EXP-5 on 800k training S1 (`run_exp7.sh`, `extra2.py`).
+
+## 16. France from EXP-5, EXP-7 (800k S1), final candidates (27 Sep, 18:40–19:42)
+- **France from EXP-5** (`code/fusion/build_fr_exp5.py`, teammate's plan).
+  - The rule (first house numbers differ AND candidate = S1 name + extra words or an acronym) vs S9 on the EXP-1 file: recall 0.673, precision 0.987.
+  - **v13** = v12 India/US + EXP-5 France minus the S9 list (875,505 French pairs).
+  - **v14** = v13 + the rule on EXP-5's remaining French pairs (−4,439, all "name + developpement/groupe/participations at a nearby house number"); 871,066 French pairs, SHA 7b8398cf90bcd92e.
+- **EXP-7** = EXP-5 on 800k training S1 (`run_exp7.sh`, `extra2.py`).
+  - Half B: India 0.98879, US 0.98840. vs EXP-5: +0.00037 weighted, leak-free +0.00029.
+  - Below the +0.0005 bar but positive in every cell, with no new feature types.
+- **Final candidates**, EXP-7 India/US minus 22,771 teammate-rule pairs:
+  - `output/v16_e7_teamIU_e5fr`: France from v14. SHA 282bec37c521c1be.
+  - `output/v17_e7_teamIU_s9fr`: S9 France. SHA d414527971d56b00.
+  - Choose by v14's LB score.
