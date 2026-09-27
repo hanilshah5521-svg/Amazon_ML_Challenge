@@ -11,3 +11,5 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .venv/
+work/ce/
+code/cross_encoder/src/__pycache__/
