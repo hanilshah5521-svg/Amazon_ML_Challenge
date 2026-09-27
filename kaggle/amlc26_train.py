@@ -95,6 +95,16 @@ for c, files in TEST_FILES.items():
     te_X.append(Xc); te.append(dc)
 te_X, te = np.concatenate(te_X), pl.concat(te)
 gc.collect()
+
+# Keep both big matrices as memory-mapped files on local disk: only the per-fold copies then live in RAM
+# (peak ~13 GB lower; the in-RAM peak during a CatBoost fold was ~26 GB of the ~29 GB available).
+TMP = os.environ.get("TMP_DIR", "/tmp")
+def to_mmap(X, name):
+    path = os.path.join(TMP, f"{name}.npy")
+    np.save(path, X)
+    return np.load(path, mmap_mode="r+")
+tr_X = to_mmap(tr_X, "tr_X"); gc.collect()
+te_X = to_mmap(te_X, "te_X"); gc.collect()
 log(f"train {tr_X.shape} ({tr_X.nbytes / 1e9:.1f} GB), positives {int(y.sum()):,}; test {te_X.shape} ({te_X.nbytes / 1e9:.1f} GB)")
 
 fold = (tr["s1"].hash(seed=11) % FOLDS).to_numpy()
