@@ -52,6 +52,8 @@ VAL_TRUTH = find(f"{IN}/**/val_truth.parquet")[0]
 if SMOKE:
     TRAIN_FILES = TRAIN_FILES[:1] + TRAIN_FILES[-1:]
     TEST_FILES = {c: v[:1] for c, v in TEST_FILES.items()}
+import catboost
+log(f"versions: polars {pl.__version__}, numpy {np.__version__}, xgboost {xgb.__version__}, catboost {catboost.__version__}")
 log(f"train parts {len(TRAIN_FILES)}, test parts {sum(map(len, TEST_FILES.values()))}, models {MODELS}, folds {FOLDS}, gpu {GPU}")
 
 # %%
